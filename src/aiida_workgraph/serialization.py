@@ -7,6 +7,21 @@ from aiida_pythonjob.utils import serialize_ports
 from node_graph.serializer import SerializationAdapter
 from node_graph.utils import resolve_tagged_values
 
+# Socket identifiers whose declared type is a Python primitive. When the
+# persisted value round-trips through AiiDA storage it becomes the matching
+# ``orm.BaseType`` node (``orm.Float``, ``orm.Int``, ``orm.Str``,
+# ``orm.Bool``); ``deserialize`` must strip that wrapper before the value
+# reaches a user-written ``@task.graph`` body whose signature declared a
+# primitive type.
+_PRIMITIVE_SOCKET_IDENTIFIERS = frozenset(
+    {
+        'workgraph.float',
+        'workgraph.int',
+        'workgraph.string',
+        'workgraph.bool',
+    }
+)
+
 
 class AiidaSerializationAdapter(SerializationAdapter):
     id: str = 'aiida'
@@ -27,6 +42,25 @@ class AiidaSerializationAdapter(SerializationAdapter):
             serializers=self.serializers,
             user=self.user,
         )
+
+    def deserialize(self, value: Any, socket: Any) -> Any:
+        """Unwrap ``orm.BaseType`` to its Python value for primitive sockets.
+
+        Symmetric counterpart to ``serialize``: where the write path
+        auto-serialises primitive inputs into ``orm.Float`` / ``orm.Int`` /
+        ``orm.Str`` / ``orm.Bool`` for provenance, the read path (invoked
+        just before a ``@task.graph`` body is called) hands the body the
+        primitive that its signature actually declared. Non-primitive sockets
+        (``workgraph.any``, AiiDA-typed sockets, etc.) pass through.
+        """
+        from aiida import orm
+
+        if not isinstance(value, orm.BaseType):
+            return value
+        identifier = getattr(socket, '_identifier', None)
+        if identifier in _PRIMITIVE_SOCKET_IDENTIFIERS:
+            return value.value
+        return value
 
     def serialize_ports(self, python_data: Any, port_schema: Any, *, store: bool) -> Any:
         resolve_tagged_values(python_data)
