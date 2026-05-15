@@ -52,14 +52,34 @@ class AiidaSerializationAdapter(SerializationAdapter):
         just before a ``@task.graph`` body is called) hands the body the
         primitive that its signature actually declared. Non-primitive sockets
         (``workgraph.any``, AiiDA-typed sockets, etc.) pass through.
+
+        Dataclass-typed sockets get the same unwrap applied to their
+        fields. Without this the ``cls(**value)`` reconstruction in
+        ``node_graph.utils.struct_utils.coerce_structured_value`` re-packs
+        node-promoted scalars into the dataclass, so a field declared
+        ``int`` lands as ``orm.Int`` and downstream stdlib calls
+        (``range(self.ntyp)``, etc.) fail with ``TypeError`` because
+        ``orm.Int`` doesn't implement ``__index__``.
         """
+        from dataclasses import fields, is_dataclass, replace
+
         from aiida import orm
 
-        if not isinstance(value, orm.BaseType):
+        if isinstance(value, orm.BaseType):
+            identifier = getattr(socket, '_identifier', None)
+            if identifier in _PRIMITIVE_SOCKET_IDENTIFIERS:
+                return value.value
             return value
-        identifier = getattr(socket, '_identifier', None)
-        if identifier in _PRIMITIVE_SOCKET_IDENTIFIERS:
-            return value.value
+
+        if is_dataclass(value) and not isinstance(value, type):
+            field_updates = {
+                f.name: getattr(value, f.name).value
+                for f in fields(value)
+                if isinstance(getattr(value, f.name), orm.BaseType)
+            }
+            if field_updates:
+                return replace(value, **field_updates)
+
         return value
 
     def serialize_ports(self, python_data: Any, port_schema: Any, *, store: bool) -> Any:
