@@ -18,6 +18,7 @@ from node_graph.socket import TaggedValue
 from node_graph.socket_spec import SocketSpec
 from aiida.orm.utils.serialize import serialize
 from aiida_workgraph.orm.utils import deserialize_safe
+import json
 from copy import deepcopy
 
 LOGGER = logging.getLogger(__name__)
@@ -268,6 +269,30 @@ def clean_pickled_task_executor(tdata: Dict[str, Any]) -> None:
             tdata['error_handlers'][name] = RuntimeExecutor.from_callable(UnavailableExecutor).to_dict()
 
 
+def _ensure_json_safe(value: Any) -> Any:
+    """Recursively ensure all values in a nested structure are JSON-serializable.
+
+    Node attributes must be JSON-serializable.  Workgraph data may contain
+    non-serializable Python objects (e.g. enum defaults from task function
+    signatures).  This function converts them to safe representations.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {k: _ensure_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_ensure_json_safe(v) for v in value]
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        pass
+    # Unwrap value-like objects (enums, etc.)
+    if hasattr(value, 'value') and not callable(value.value):
+        return _ensure_json_safe(value.value)
+    return str(value)
+
+
 def save_workgraph_data(node: Union[int, orm.Node], inputs: Dict[str, Any]) -> None:
     from aiida_workgraph.engine.workgraph import WorkGraphSpec
 
@@ -286,9 +311,9 @@ def save_workgraph_data(node: Union[int, orm.Node], inputs: Dict[str, Any]) -> N
     node.task_states = task_states
     node.task_processes = task_processes
     node.task_actions = task_actions
-    node.workgraph_data = wgdata
-    node.workgraph_data_short = short_wgdata
-    node.workgraph_error_handlers = wgdata.pop('error_handlers', {})
+    node.workgraph_data = _ensure_json_safe(wgdata)
+    node.workgraph_data_short = _ensure_json_safe(short_wgdata)
+    node.workgraph_error_handlers = _ensure_json_safe(wgdata.pop('error_handlers', {}))
     graph_inputs = dict(inputs.pop('graph_inputs', {}))
     tasks = dict(inputs.pop('tasks', {}))
     tasks['graph_inputs'] = graph_inputs
