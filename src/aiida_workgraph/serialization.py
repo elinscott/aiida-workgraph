@@ -71,6 +71,17 @@ class AiidaSerializationAdapter(SerializationAdapter):
                 return value.value
             return value
 
+        # Same unwrap for container-typed sockets: a plain dict/list built in
+        # a parent graph body is promoted to ``orm.Dict`` / ``orm.List`` for
+        # provenance, but a body whose signature declares ``dict`` / ``list``
+        # expects the plain container (e.g. ``get_protocol_inputs`` calls
+        # ``overrides.copy()``, which ``orm.Dict`` doesn't implement).
+        identifier = getattr(socket, '_identifier', None)
+        if isinstance(value, orm.Dict) and identifier == 'workgraph.dict':
+            return value.get_dict()
+        if isinstance(value, orm.List) and identifier == 'workgraph.list':
+            return value.get_list()
+
         if is_dataclass(value) and not isinstance(value, type):
             field_updates = {
                 f.name: getattr(value, f.name).value
