@@ -317,11 +317,20 @@ class TaskStateManager:
         for mapped_task in gather_clones.values():
             state = self.get_task_runtime_info(mapped_task.name, 'state')
             if state not in TERMINAL_TASK_STATES:
+                # Clone still in-flight (PLANNED/RUNNING); bail and let the
+                # next ``continue_workgraph`` tick re-enter once it is terminal.
                 return
-            if state == TaskState.FAILED:
+            if state in (TaskState.FAILED, TaskState.SKIPPED):
+                # A failed compute iteration marks its downstream gather clone
+                # SKIPPED (``on_task_failed`` skips the child_node set), and a
+                # directly FAILED clone likewise records no result. Either
+                # terminal state means this iteration produced no gather output.
                 any_failed = True
-                continue
-            if mapped_task.name not in self.ctx._task_results:
+            elif not self.ctx._task_results.get(mapped_task.name):
+                # FINISHED but the result has not landed in ``ctx._task_results``
+                # yet. ``copy_task`` pre-seeds an empty dict, so membership alone
+                # cannot detect this race — check for an empty result instead and
+                # bail so the next tick re-enters once the result is recorded.
                 return
         # If any mapped iteration failed, propagate failure rather than
         # try to gather a result that was never produced. Without this

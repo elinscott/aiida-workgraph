@@ -28,6 +28,27 @@ def calc_sum(data: Annotated[dict, dynamic(orm.Int)]) -> float:
     return sum(data.values())
 
 
+@task()
+def add_or_raise(x, y):
+    """Add two numbers, but raise for a specific input to exercise a failed map iteration."""
+    if x == 1:
+        raise ValueError('boom on x == 1')
+    return x + y
+
+
+def test_map_zone_failed_iteration():
+    """A failed mapped iteration must propagate FAILED to the map task rather than
+    raising a ``KeyError`` while gathering the output the failed iteration never produced."""
+    n = 3
+    with WorkGraph('map_fail_graph') as wg:
+        data = generate_data(n=n).data
+        with Map(data) as map_zone:
+            out = add_or_raise(x=map_zone.item.value, y=10).result
+            map_zone.gather({'sums': out})
+        wg.run()
+    assert map_zone.state == 'FAILED'
+
+
 def test_map_zone():
     x = 1
     y = 2
