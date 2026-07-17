@@ -47,6 +47,53 @@ def _flatten_enums(value: Any) -> Any:
     return value
 
 
+def _flatten_enums(value: Any) -> Any:
+    """Replace ``Enum`` members with their bare ``.value``, recursively.
+
+    ``general_serializer`` (aiida-pythonjob) has no serializer for ``Enum``
+    members: a raw ``Enum`` -- or one nested in a dict/list/tuple -- reaches
+    it and the whole submission fails at submit time with an opaque
+    serialization error. Collapsing members to their ``.value`` here keeps
+    the payload JSON-serializable so ``serialize_ports`` succeeds. The
+    ``isinstance`` check also matches wrapt proxies (node-graph's
+    ``TaggedValue``) wrapping an enum member.
+
+    This is a one-way flattening, *not* a round-trip. Under the pinned
+    ``node_graph`` the read side (``coerce_inputs_from_spec``) rebuilds only
+    structured *models* -- dataclass/pydantic/TypedDict -- and records no
+    ``structured_type`` extra for ``Enum`` sockets, so it never reconstructs
+    the member. Task bodies therefore receive the bare value, not the
+    ``Enum`` they declared. This is harmless for ``IntEnum`` / ``str, Enum``
+    consumed by value or equality, but a body that tests ``x is Color.RED``
+    or ``x == Color.RED`` against a *plain* ``Enum`` sees ``False``. See
+    ``tests/test_serializer.py::test_body_receives_bare_value_not_member``.
+
+    ``set``/``frozenset`` are deliberately left untouched: a set fails in
+    ``general_serializer`` regardless of its contents (not JSON-serializable,
+    no registered serializer), so descending into one to flatten enums would
+    not make it serializable -- see
+    ``tests/test_serializer.py::test_flatten_leaves_sets_untouched``.
+    """
+    if isinstance(value, Enum):
+        return _flatten_enums(value.value)
+    if isinstance(value, dict):
+        out: Dict[Any, Any] = {}
+        for k, v in value.items():
+            flat_key = _flatten_enums(k)
+            if flat_key in out:
+                # Two distinct keys (e.g. an Enum member and its bare value,
+                # or two members sharing a ``.value``) collapse to one; raise
+                # rather than silently drop an entry.
+                raise ValueError(f'Enum key flattening collision: multiple keys map to {flat_key!r}')
+            out[flat_key] = _flatten_enums(v)
+        return out
+    if isinstance(value, list):
+        return [_flatten_enums(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_flatten_enums(v) for v in value)
+    return value
+
+
 class AiidaSerializationAdapter(SerializationAdapter):
     id: str = 'aiida'
     name: str = 'AiiDA'
