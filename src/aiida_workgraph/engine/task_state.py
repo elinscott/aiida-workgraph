@@ -298,65 +298,23 @@ class TaskStateManager:
         3) update the parent task state.
         """
         finished, _ = self.are_childen_finished(name)
-        if not finished:
-            return
-        map_zone = self.process.wg.tasks[name]
-        gather_task = map_zone.gather_item_task
-        gather_clones = self.process.wg.tasks[gather_task.name].mapped_tasks or {}
-        # Defensive guard against a race between graph-task completion
-        # propagating up through ``update_template_task_state`` and the
-        # per-prefix gather_item clones actually running. With Map zones
-        # whose iterations finish back-to-back (e.g. an empty-orbital
-        # scatter with only 2 prefixes), ``are_childen_finished`` can
-        # return True for the map_zone before every gather clone has
-        # recorded its result in ``ctx._task_results``. Bailing out
-        # cleanly lets the engine's next ``continue_workgraph`` tick
-        # schedule the missing clones; their completion eventually
-        # re-enters this method with the results populated.
-        any_failed = False
-        for mapped_task in gather_clones.values():
-            state = self.get_task_runtime_info(mapped_task.name, 'state')
-            if state not in TERMINAL_TASK_STATES:
-                # Clone still in-flight (PLANNED/RUNNING); bail and let the
-                # next ``continue_workgraph`` tick re-enter once it is terminal.
-                return
-            if state in (TaskState.FAILED, TaskState.SKIPPED):
-                # A failed compute iteration marks its downstream gather clone
-                # SKIPPED (``on_task_failed`` skips the child_node set), and a
-                # directly FAILED clone likewise records no result. Either
-                # terminal state means this iteration produced no gather output.
-                any_failed = True
-            elif not self.ctx._task_results.get(mapped_task.name):
-                # FINISHED but the result has not landed in ``ctx._task_results``
-                # yet. ``copy_task`` pre-seeds an empty dict, so membership alone
-                # cannot detect this race — check for an empty result instead and
-                # bail so the next tick re-enters once the result is recorded.
-                return
-        # If any mapped iteration failed, propagate failure rather than
-        # try to gather a result that was never produced. Without this
-        # branch the gather loop below ``KeyError``s on the missing
-        # per-prefix output and the whole engine excepts, masking the
-        # original calc failure with a confusing ``KeyError`` trace.
-        if any_failed:
-            self.set_task_runtime_info(name, 'state', TaskState.FAILED)
-            self.process.report(
-                f'Task: {name} failed because one or more mapped iterations failed.'
-            )
+        if finished:
+            map_zone = self.process.wg.tasks[name]
+            # gather the results of all the mapped tasks
+            gather_task = map_zone.gather_item_task
+            for input in gather_task.inputs:
+                if input._name.startswith('_'):
+                    continue
+                results = {}
+                link = input._links[0]
+                for prefix, mapped_task in self.process.wg.tasks[gather_task.name].mapped_tasks.items():
+                    results[prefix] = self.ctx._task_results[mapped_task.name][link.to_socket._name]
+                self.ctx._task_results[name][link.to_socket._name] = results
+            self.set_task_runtime_info(name, 'state', TaskState.FINISHED)
+            # self.update_meta_tasks(name)
+            self.process.report(f'Task: {name} finished.')
+            self.update_meta_tasks(name)
             self.update_parent_task_state(name)
-            return
-        # gather the results of all the mapped tasks
-        for input in gather_task.inputs:
-            if input._name.startswith('_'):
-                continue
-            results = {}
-            link = input._links[0]
-            for prefix, mapped_task in gather_clones.items():
-                results[prefix] = self.ctx._task_results[mapped_task.name][link.to_socket._name]
-            self.ctx._task_results[name][link.to_socket._name] = results
-        self.set_task_runtime_info(name, 'state', TaskState.FINISHED)
-        self.process.report(f'Task: {name} finished.')
-        self.update_meta_tasks(name)
-        self.update_parent_task_state(name)
 
     def update_template_task_state(self, name: str) -> None:
         """Update the template task state.
