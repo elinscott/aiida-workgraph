@@ -99,3 +99,27 @@ def test_not_required_entry_keys_may_be_absent_from_source():
     assert blocks.second.value.value == 15
     assert blocks.second.extra_a.value is None
     assert blocks.second.extra_b.value == 7
+
+
+def test_per_key_links_into_typed_dynamic_entries_round_trip_and_run():
+    """Entries populated key by key from leaf sockets round-trip and run."""
+
+    class Out(TypedDict):
+        blocks: Annotated[dict, dynamic(Contract)]
+
+    @task.graph
+    def make_blocks(a: orm.Int, b: orm.Int) -> Out:
+        blocks: dict[str, Any] = {}
+        for label, x in (('block_1', a), ('block_2', b)):
+            blocks[label] = {'value': mk(x, 10).result, 'tag': mk(x, 100).result}
+        return Out(blocks=blocks)
+
+    wg = make_blocks.build(a=orm.Int(2), b=orm.Int(5))
+    WorkGraph.from_dict(wg.to_dict())
+    wg.run()
+
+    blocks = wg.outputs.blocks
+    assert blocks.block_1.value.value == 12
+    assert blocks.block_1.tag.value == 102
+    assert blocks.block_2.value.value == 15
+    assert blocks.block_2.tag.value == 105
