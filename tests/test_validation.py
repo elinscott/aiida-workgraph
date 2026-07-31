@@ -22,6 +22,53 @@ def test_validate_required_inputs():
         my_graph.run(a=1, b={'x': 1})
 
 
+@task
+def consume_optional_namespace(payload: Annotated[dict, namespace(x=int, y=int)] = None):
+    return payload
+
+
+@task
+def consume_required_namespace(payload: Annotated[dict, namespace(x=int, y=int)]):
+    return payload
+
+
+def test_optional_namespace_left_empty_is_not_missing():
+    """An optional namespace socket that the caller never touched is complete.
+
+    Its children are required only *within* the namespace — they say what must be
+    supplied if the namespace is supplied at all. Recursing into an untouched
+    optional namespace reported every child as missing, which made an optional
+    grouped input (e.g. a ``TypedDict | None``) impossible to omit.
+    """
+    wg = WorkGraph('optional-namespace')
+    wg.add_task(consume_optional_namespace, name='consumer')
+
+    assert wg.find_missing_inputs(wg.tasks.consumer.inputs) == []
+    wg.check_required_inputs()
+
+
+def test_partially_filled_optional_namespace_reports_its_gaps():
+    """Once an optional namespace is used at all, its children are back in force."""
+    wg = WorkGraph('optional-namespace-partial')
+    task_ = wg.add_task(consume_optional_namespace, name='consumer')
+    task_.inputs.payload.x.value = 1
+
+    assert wg.find_missing_inputs(task_.inputs) == ['consumer.payload.y']
+    with pytest.raises(ValueError, match=re.escape('consumer.payload.y')):
+        wg.check_required_inputs()
+
+
+def test_required_namespace_left_empty_still_reports_its_children():
+    """A required namespace is unaffected: omitting it is still an error."""
+    wg = WorkGraph('required-namespace')
+    task_ = wg.add_task(consume_required_namespace, name='consumer')
+
+    assert sorted(wg.find_missing_inputs(task_.inputs)) == [
+        'consumer.payload.x',
+        'consumer.payload.y',
+    ]
+
+
 @pytest.mark.parametrize(
     'name, reason',
     [
