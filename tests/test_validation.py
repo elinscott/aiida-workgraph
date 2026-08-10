@@ -214,6 +214,17 @@ class TestMissingRequiredInputsPayload:
     def test_error_is_a_value_error(self):
         assert issubclass(MissingRequiredInputsError, ValueError)
 
+    def test_error_survives_pickle_and_deepcopy(self):
+        import copy
+        import pickle
+
+        from aiida_workgraph.errors import MissingInput
+
+        error = MissingRequiredInputsError([MissingInput('add.y', 'workgraph.int', 'The right operand.')])
+        for clone in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):
+            assert clone.missing == error.missing
+            assert str(clone) == str(error)
+
     def test_missing_code_input_identifier(self):
         @task
         def run_code(code: orm.InstalledCode, x):
