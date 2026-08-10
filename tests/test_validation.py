@@ -1,5 +1,6 @@
 from aiida_workgraph import task, namespace, meta, WorkGraph
 from aiida_workgraph.errors import MissingRequiredInputsError
+from aiida import orm
 from typing import Annotated
 import pytest
 import re
@@ -145,3 +146,17 @@ class TestMissingRequiredInputsPayload:
 
     def test_error_is_a_value_error(self):
         assert issubclass(MissingRequiredInputsError, ValueError)
+
+    def test_missing_code_input_identifier(self):
+        @task
+        def run_code(code: orm.InstalledCode, x):
+            return x
+
+        @task.graph()
+        def my_graph(a):
+            run_code(x=a)
+
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            my_graph.run(a=1)
+        entries = {entry.socket_path: entry for entry in excinfo.value.missing}
+        assert entries['run_code.code'].identifier == 'workgraph.code'
