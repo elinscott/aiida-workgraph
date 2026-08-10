@@ -30,6 +30,10 @@ class MissingRequiredInputsError(ValueError):
     them programmatically (e.g. point users to the right input by type).
     """
 
+    def __reduce__(self) -> tuple[type[MissingRequiredInputsError], tuple[List[MissingInput]]]:
+        """Reduce to the pattern that ``__init__`` can digest."""
+        return (self.__class__, (self.missing,))
+
     def __init__(self, missing: List[MissingInput]) -> None:
         self.missing = sorted(missing, key=lambda entry: entry.socket_path)
         bullets = '\n'.join(f'  • {entry.socket_path}' for entry in self.missing)
