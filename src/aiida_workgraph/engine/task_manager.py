@@ -305,7 +305,8 @@ class TaskManager:
             for prefix, value in source.items():
                 new_tasks, new_links = self.generate_mapped_tasks(task, prefix=prefix)
                 self.update_map_item_task_state(item_task, prefix, value)
-            map_info['children'] = list(new_tasks.keys())
+            # include the (uncloned) gather_item so its restored edges are not dangling
+            map_info['children'] = list(new_tasks.keys()) + [task.gather_item_task.name]
             map_info['links'] = new_links
         self.state_manager.set_task_runtime_info(name, 'map_info', map_info)
         # gather task finishes immediately
@@ -472,6 +473,15 @@ class TaskManager:
         all_links = []
         child_tasks = self.get_all_children(zone_task.name)
         for child_task in child_tasks:
+            # The gather_item task is a pure pass-through aggregator
+            # (executor=return_input); the map zone reads directly from the
+            # mapped source tasks in `update_map_task_state`, so cloning
+            # gather_item would just create unused clones. Skipping the
+            # clone also avoids a race where, for async process-type source
+            # tasks (CalcJob, WorkChain, @task.graph), the gather_item
+            # clones stay PLANNED and hang the engine's finalize path.
+            if self.process.wg.tasks[child_task].identifier == 'workgraph.gather_item':
+                continue
             # since the child task is mapped, it should be skipped
             self.state_manager.set_task_runtime_info(child_task, 'state', TaskState.MAPPED)
             task = self.copy_task(child_task, prefix)
@@ -482,6 +492,15 @@ class TaskManager:
         new_links = self._patch_cloned_tasks(new_tasks, all_links)
         # update process.wg.connectivity so the new tasks are recognized in child_node, zone references, etc.
         self._patch_connectivity(new_tasks)
+        # gather_item is intentionally not cloned, so `_patch_cloned_tasks` drops
+        # the source -> gather_item edges (its `to_task` is not in new_tasks) and
+        # the GUI loses them. Re-add each as its template edge, the same shape the
+        # other map_info links use (the GUI expands them per prefix); this is
+        # display-only, no engine link is created.
+        gather_item = zone_task.gather_item_task
+        for link in gather_item.inputs._all_links:
+            if link.from_task.name in new_tasks:
+                new_links.append(link.to_dict())
         return new_tasks, new_links
 
     def update_map_item_task_state(self, item_task, prefix, value: Any):

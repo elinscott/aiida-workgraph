@@ -133,8 +133,29 @@ class Map(Zone):
                 return cast(Task, child)
         return self.add_task('workgraph.gather_item')
 
+    def _contains_task(self, target: Task) -> bool:
+        """True if ``target`` is a descendant of this zone (recursing nested zones)."""
+        stack = list(self.children)
+        while stack:
+            task = stack.pop()
+            if task.name == target.name:
+                return True
+            stack.extend(getattr(task, 'children', []))
+        return False
+
     def gather(self, sockets: Dict[str, BaseSocket]) -> BaseSocket:
         """Collect per-entry results into the zone outputs, one namespace per name."""
+        # Validate every source before mutating anything (the loop below and even
+        # `self.gather_item_task` add state), so a rejection leaves the zone
+        # unchanged and rebuildable.
+        for name, socket in sockets.items():
+            source = socket._task
+            if not self._contains_task(source):
+                msg = (
+                    f"Map.gather() source '{name}' ('{source.name}') is outside the Map zone (one value, not "
+                    f'per-iteration). Move a per-iteration task inside the zone, or use a shared value (graph input) directly.'
+                )
+                raise ValueError(msg)
         gather_item = self.gather_item_task
         for name in sockets:
             gather_item.add_input_spec('workgraph.any', name=name)
