@@ -19,7 +19,7 @@ class AiiDAFunctionTask(Task):
     task_type = 'function'
     catalog = 'AIIDA'
 
-    def execute(self, args=None, kwargs=None, var_kwargs=None):
+    def execute(self, engine_process=None, args=None, kwargs=None, var_kwargs=None):
         from aiida.engine import run_get_node
         from node_graph.task_spec import BaseHandle
 
@@ -30,10 +30,23 @@ class AiiDAFunctionTask(Task):
         kwargs.setdefault('metadata', {})
         kwargs['metadata'].update({'call_link_label': self.name})
         # since aiida 2.5.0, we need to use args_dict to pass the args to the run_get_node
-        if var_kwargs is None:
-            _, process = run_get_node(executor, **kwargs)
-        else:
-            _, process = run_get_node(executor, **kwargs, **var_kwargs)
+        try:
+            if var_kwargs is None:
+                _, process = run_get_node(executor, **kwargs)
+            else:
+                _, process = run_get_node(executor, **kwargs, **var_kwargs)
+        except Exception:
+            # `run_get_node` stores and CALL-links the process node before running it,
+            # then re-raises the wrapped function's exception straight through instead
+            # of returning the node, so the caller loses the reference on failure.
+            # Recover it from provenance via the call link label set above, which is
+            # unique to this call.
+            if engine_process is None:
+                raise
+            process = engine_process.node.base.links.get_outgoing(link_label_filter=self.name).get_node_by_label(
+                self.name
+            )
+            return process, TaskState.FAILED
 
         return process, TaskState.FINISHED
 
