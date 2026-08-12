@@ -204,7 +204,7 @@ class TaskManager:
         """Execute a CalcFunction or WorkFunction task."""
 
         try:
-            process, _ = task.execute(args, kwargs, var_kwargs)
+            process, _ = task.execute(engine_process=self.process, args=args, kwargs=kwargs, var_kwargs=var_kwargs)
             self.state_manager.set_task_runtime_info(task.name, 'process', process)
             self.state_manager.update_task_state(task.name)
         except Exception as e:
