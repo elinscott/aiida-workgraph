@@ -18,6 +18,11 @@ from node_graph.error_handler import ErrorHandlerSpec
 LOGGER = logging.getLogger(__name__)
 
 
+def has_declared_default(socket: BaseSocket) -> bool:
+    """Return True if the socket was declared with a default value."""
+    return 'default' in socket._metadata.extras
+
+
 class WorkGraph(node_graph.Graph):
     """Build flexible workflows with AiiDA.
 
@@ -130,7 +135,17 @@ class WorkGraph(node_graph.Graph):
                     continue
                 missing_inputs.extend(self.find_missing_inputs(sub_socket))
             else:
-                if sub_socket._metadata.required and sub_socket.value is None and len(sub_socket._links) == 0:
+                # A field of a dataclass or a pydantic model is marked required even when
+                # it has a default: node_graph derives requiredness from a default only
+                # for function parameters. A default of None then leaves the socket
+                # valueless, so the declared default is the only thing separating a field
+                # left at its default from an input the caller never gave.
+                if (
+                    sub_socket._metadata.required
+                    and sub_socket.value is None
+                    and len(sub_socket._links) == 0
+                    and not has_declared_default(sub_socket)
+                ):
                     missing_inputs.append(f'{sub_socket._task.name}.{sub_socket._scoped_name}')
         return missing_inputs
 

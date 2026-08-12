@@ -1,7 +1,8 @@
 from aiida_workgraph import task, namespace, meta, WorkGraph
 from aiida_workgraph.errors import MissingRequiredInputsError
 from aiida import orm
-from typing import Annotated, NotRequired, TypedDict
+from dataclasses import dataclass
+from typing import Annotated, NotRequired, Optional, TypedDict
 import pytest
 import re
 
@@ -233,6 +234,75 @@ def test_namespace_of_unprovided_references_reaches_a_deferred_body(monkeypatch)
 
     assert wg.process.exit_status == 0, '\n'.join(messages)
     assert wg.outputs.result.value == 0
+
+
+@dataclass(frozen=True)
+class Settings:
+    """A field the caller must give, beside one that defaults to None."""
+
+    nelec: int
+    tot_magnetization: Optional[int] = None
+
+
+@task
+def consume_settings(settings: Settings) -> int:
+    return settings.nelec
+
+
+def test_field_left_at_its_default_is_not_missing():
+    """A field of a structured model with a default is not the caller's to provide.
+
+    ``SocketSpecAPI.from_model`` marks every dataclass and pydantic field required
+    whatever its default, so a field defaulting to ``None`` reaches the check as a
+    required socket carrying no value: by value alone, indistinguishable from an
+    input never given.
+    """
+    wg = WorkGraph('dataclass-default')
+    consumer = wg.add_task(consume_settings, name='consumer')
+    consumer.inputs.settings.nelec.value = 8
+
+    assert wg.find_missing_inputs(consumer.inputs) == []
+    wg.check_required_inputs()
+
+
+def test_field_without_a_default_is_still_missing():
+    """What exempts a field is its default, not the model it belongs to."""
+    wg = WorkGraph('dataclass-no-default')
+    consumer = wg.add_task(consume_settings, name='consumer')
+    consumer.inputs.settings.tot_magnetization.value = 0
+
+    assert wg.find_missing_inputs(consumer.inputs) == ['consumer.settings.nelec']
+    with pytest.raises(ValueError, match=re.escape('consumer.settings.nelec')):
+        wg.check_required_inputs()
+
+
+def test_deferred_body_accepts_a_field_left_at_its_default(monkeypatch):
+    """A nested body may leave a defaulted field of a model input unset.
+
+    The nested check runs against the materialized body, where such a field's
+    socket carries its declared default and nothing else. Reporting it as missing
+    failed every graph that passed a model with an optional field left alone.
+    """
+    messages = _record_engine_errors(monkeypatch)
+
+    @task.graph()
+    def inner(settings: Settings) -> int:
+        return add(x=settings.nelec, y=1)
+
+    @task.graph()
+    def middle(nelec: int) -> int:
+        # built inside a deferred body, so only the nested check ever sees it
+        return inner(settings=Settings(nelec=nelec))
+
+    @task.graph()
+    def outer(nelec: int) -> int:
+        return middle(nelec=nelec)
+
+    wg = outer.build(nelec=8)
+    wg.run()
+
+    assert wg.process.exit_status == 0, '\n'.join(messages)
+    assert wg.outputs.result.value == 9
 
 
 class TestMissingRequiredInputsPayload:
