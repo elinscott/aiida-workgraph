@@ -1,7 +1,7 @@
 from aiida_workgraph import task, namespace, meta, WorkGraph
 from aiida_workgraph.errors import MissingRequiredInputsError
 from aiida import orm
-from typing import Annotated
+from typing import Annotated, NotRequired, TypedDict
 import pytest
 import re
 
@@ -151,6 +151,88 @@ def test_invalid_call_link_label_raises_at_build_time():
         with WorkGraph():
             add(1, 2, metadata={'call_link_label': '_sum'})
     assert 'call_link_label' in str(excinfo.value)
+
+
+def _record_engine_errors(monkeypatch):
+    """Collect the messages the engine logs for a failed task."""
+    import logging
+
+    messages = []
+    original_error = logging.Logger.error
+
+    def recording_error(self, msg, *args, **kwargs):
+        messages.append(str(msg))
+        return original_error(self, msg, *args, **kwargs)
+
+    monkeypatch.setattr(logging.Logger, 'error', recording_error)
+    return messages
+
+
+def test_deferred_graph_reports_its_missing_inputs(monkeypatch):
+    """A nested graph's tasks exist only once the engine materializes its body.
+
+    Nothing checked those tasks, so a required input left unfilled inside a
+    nested body surfaced as a ``TypeError`` from the Python call rather than as
+    the missing-input report the same graph gives when it is the top graph.
+    """
+    messages = _record_engine_errors(monkeypatch)
+
+    @task.graph()
+    def inner(a):
+        add(a)
+
+    @task.graph()
+    def outer(a):
+        return inner(a=a)
+
+    wg = outer.build(a=1)
+    # the inner body has not run yet, so the submit-time check sees nothing to report
+    wg.check_before_run()
+    wg.run()
+
+    assert wg.process.exit_status == 302
+    assert wg.process.get_task_state('inner') == 'FAILED'
+    reported = '\n'.join(messages)
+    assert 'Missing required inputs:' in reported
+    assert 'add.y' in reported
+
+
+def test_namespace_of_unprovided_references_reaches_a_deferred_body(monkeypatch):
+    """A namespace whose members are all unprovided references is still an argument.
+
+    ``ref()`` (node_graph) leaves an input unfilled when the referenced socket
+    carries no value, which is how a caller forwards an optional member it may
+    not have. When every member of a namespace is such a reference the namespace
+    collects to ``{}``; dropping it left the callee with no argument at all.
+    """
+    from node_graph import ref
+
+    messages = _record_engine_errors(monkeypatch)
+
+    class MaybeCodes(TypedDict):
+        maybe: NotRequired[int]
+
+    class OuterCodes(TypedDict):
+        other: int
+        maybe: NotRequired[int]
+
+    @task()
+    def count_members(codes: MaybeCodes = None) -> int:
+        return len(codes or {})
+
+    @task.graph()
+    def inner(codes: MaybeCodes) -> int:
+        return count_members(codes=codes)
+
+    @task.graph()
+    def outer(codes: OuterCodes) -> int:
+        return inner(codes={'maybe': ref(codes, 'maybe')})
+
+    wg = outer.build(codes={'other': 1})
+    wg.run()
+
+    assert wg.process.exit_status == 0, '\n'.join(messages)
+    assert wg.outputs.result.value == 0
 
 
 class TestMissingRequiredInputsPayload:

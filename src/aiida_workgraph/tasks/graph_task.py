@@ -67,6 +67,9 @@ class GraphTask(Task):
             kwargs=kwargs,
             var_kwargs=var_kwargs,
         )
+        # A deferred body builds its tasks here, so this is the first moment its
+        # required inputs can be checked at all.
+        wg.check_required_inputs()
         # Set the maximum number of concurrent jobs
         max_number_jobs = self.spec.metadata.get('max_number_jobs')
         if max_number_jobs is not None:

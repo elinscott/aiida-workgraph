@@ -25,6 +25,15 @@ process_task_types = [
 ]
 
 
+def has_unresolved_reference(socket) -> bool:
+    """Return True if the socket, or any socket below it, was wired to an unprovided reference."""
+    if socket._metadata.extras.get('unresolved_ref') is not None:
+        return True
+    if isinstance(socket, TaskSocketNamespace):
+        return any(has_unresolved_reference(child) for child in socket._sockets.values())
+    return False
+
+
 class TaskManager:
     """Manages task execution, state updates, and error handling."""
 
@@ -342,8 +351,15 @@ class TaskManager:
             socket_value = {}
             for name, sub_socket in socket._sockets.items():
                 value = self.get_socket_value(sub_socket)
-                if value is None or (isinstance(value, dict) and value == {}):
-                    continue
+                empty_namespace = isinstance(value, dict) and value == {}
+                if value is None or empty_namespace:
+                    # A namespace whose every member was wired to an unprovided
+                    # reference collects to `{}`, and dropping it would hand the
+                    # callee no argument at all: a graph body would then fail with
+                    # a missing-argument TypeError instead of the missing-input
+                    # report for the member that is actually absent.
+                    if not (empty_namespace and has_unresolved_reference(sub_socket)):
+                        continue
                 socket_value[name] = value
         else:
             socket_value = socket.property.value
