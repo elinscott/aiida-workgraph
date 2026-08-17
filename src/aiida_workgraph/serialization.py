@@ -20,15 +20,15 @@ def _flatten_enums(value: Any) -> Any:
     ``isinstance`` check also matches wrapt proxies (node-graph's
     ``TaggedValue``) wrapping an enum member.
 
-    This is a one-way flattening, *not* a round-trip. Under the pinned
-    ``node_graph`` the read side (``coerce_inputs_from_spec``) rebuilds only
-    structured *models* -- dataclass/pydantic/TypedDict -- and records no
-    ``structured_type`` extra for ``Enum`` sockets, so it never reconstructs
-    the member. Task bodies therefore receive the bare value, not the
-    ``Enum`` they declared. This is harmless for ``IntEnum`` / ``str, Enum``
-    consumed by value or equality, but a body that tests ``x is Color.RED``
-    or ``x == Color.RED`` against a *plain* ``Enum`` sees ``False``. See
-    ``tests/test_serializer.py::test_body_receives_bare_value_not_member``.
+    Flattening is one-way. Whether a body then receives the ``Enum`` it
+    declared is the installed ``node_graph``'s call: the read side
+    (``coerce_inputs_from_spec``) rebuilds a socket's value only from the
+    ``structured_type`` descriptor its spec records, and not every
+    ``node_graph`` records one for ``Enum``. Without it a function task's
+    body receives the bare value and a ``@task.graph`` body the stored
+    ``orm.Str``; with it both receive the member. A body that must work
+    under either writes ``Color(c)``, never ``c is Color.RED``. See
+    ``tests/test_serializer.py::test_enum_arrival_follows_the_node_graph_capability``.
 
     ``set``/``frozenset`` are deliberately left untouched: a set fails in
     ``general_serializer`` regardless of its contents (not JSON-serializable,
