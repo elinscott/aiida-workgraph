@@ -1,5 +1,9 @@
+from enum import Enum, IntEnum
+
 from aiida_workgraph import WorkGraph, task
 import pytest
+
+from aiida_workgraph.serialization import AiidaSerializationAdapter, _flatten_enums
 
 
 @task.graph()
@@ -14,3 +18,177 @@ def test_func_as_input(capsys):
     wg.add_task(sub_workflow, func=add, name='sub_workflow')
     with pytest.raises(Exception, match='Cannot serialize the provided object'):
         wg.save()
+
+
+class Color(Enum):
+    """Plain enum whose value is a bare string."""
+
+    RED = 'red'
+    BLUE = 'blue'
+
+
+class Priority(IntEnum):
+    """Enum whose value is a bare int."""
+
+    LOW = 1
+    HIGH = 9
+
+
+class Flavour(str, Enum):
+    """Enum member that is itself a ``str`` subclass."""
+
+    SWEET = 'sweet'
+    SOUR = 'sour'
+
+
+def test_flatten_bare_enum_member():
+    """A lone member collapses to its ``.value``, not a mangled ``Color.RED``."""
+    assert _flatten_enums(Color.RED) == 'red'
+    assert not isinstance(_flatten_enums(Color.RED), Enum)
+
+
+def test_flatten_intenum_and_str_enum_yield_bare_value():
+    """The bare value's own type is preserved (int stays int, str stays str)."""
+    assert _flatten_enums(Priority.HIGH) == 9
+    assert type(_flatten_enums(Priority.HIGH)) is int
+    assert _flatten_enums(Flavour.SWEET) == 'sweet'
+    assert type(_flatten_enums(Flavour.SWEET)) is str
+
+
+def test_flatten_dict_keys_and_values():
+    """Enums appearing as dict keys *and* values both flatten."""
+    assert _flatten_enums({Color.RED: Color.BLUE, 'n': Priority.LOW}) == {'red': 'blue', 'n': 1}
+
+
+def test_flatten_list_and_tuple_preserve_container_type():
+    """Sequences recurse element-wise and keep list-vs-tuple identity."""
+    assert _flatten_enums([Color.RED, 1, 'x']) == ['red', 1, 'x']
+    out = _flatten_enums((Color.RED, Priority.HIGH))
+    assert out == ('red', 9)
+    assert isinstance(out, tuple)
+
+
+def test_flatten_mixed_nesting():
+    """Enums buried in a dict/list/tuple mixture are all reached."""
+    payload = {
+        'a': [Color.RED, {'b': Priority.LOW}],
+        Color.BLUE: ('x', Flavour.SOUR),
+    }
+    assert _flatten_enums(payload) == {
+        'a': ['red', {'b': 1}],
+        'blue': ('x', 'sour'),
+    }
+
+
+def test_flatten_passthrough_of_enum_free_payload():
+    """An enum-free payload comes back with identical values."""
+    payload = {'n': 3, 'items': [1, 'two', (3.0, None)], 'flag': True}
+    assert _flatten_enums(payload) == payload
+
+
+def test_flatten_wrapt_proxied_enum_member():
+    """A wrapt ``ObjectProxy`` (as TaggedValue wraps members) still flattens."""
+    wrapt = pytest.importorskip('wrapt')
+    proxied = wrapt.ObjectProxy(Color.RED)
+    assert _flatten_enums(proxied) == 'red'
+    assert _flatten_enums({proxied: proxied}) == {'red': 'red'}
+
+
+def test_flatten_dict_key_collision_raises():
+    """Two distinct keys collapsing to the same flattened key raises rather than
+    silently dropping an entry. Here ``Color.RED`` (a plain Enum, so distinct in
+    identity and hash from the bare string) and ``'red'`` are separate keys that
+    both flatten to ``'red'``."""
+    payload = {Color.RED: 1, 'red': 2}
+    assert len(payload) == 2  # distinct keys before flattening
+    with pytest.raises(ValueError, match='collision'):
+        _flatten_enums(payload)
+
+
+def test_flatten_leaves_sets_untouched():
+    """``set``/``frozenset`` are not descended into: they fail in
+    ``general_serializer`` regardless of contents, so flattening enums inside
+    them would not make them serializable. Pin that they pass through unchanged
+    (still holding Enum members)."""
+    s = {Color.RED, Color.BLUE}
+    out = _flatten_enums(s)
+    assert out is s
+    assert Color.RED in out
+    fs = frozenset({Priority.LOW})
+    assert _flatten_enums(fs) is fs
+
+
+def test_serialize_ports_accepts_enum_value(aiida_profile):
+    """End-to-end through the adapter: an enum-valued namespace entry serializes
+    without raising, landing as the flattened bare value (needs a profile so the
+    downstream ``general_serializer`` can build the node)."""
+    from aiida import orm
+    from node_graph.socket_spec import SocketMeta, SocketSpec
+
+    spec = SocketSpec(identifier='node_graph.namespace', meta=SocketMeta(dynamic=True))
+    out = AiidaSerializationAdapter().serialize_ports({'c': Color.RED, 'n': 3}, spec, store=False)
+    assert isinstance(out['c'], orm.Str)
+    assert out['c'].value == 'red'
+
+
+@task(outputs=['type_name', 'is_member', 'rebuilt_name'])
+def observe_enum(c: Color) -> dict:
+    """Report what a function task's body receives for an Enum-typed input."""
+    return {
+        'type_name': type(c).__name__,
+        'is_member': isinstance(c, Color),
+        'rebuilt_name': Color(getattr(c, 'value', c)).name,
+    }
+
+
+@task()
+def echo_str(s: str) -> str:
+    return s
+
+
+@task.graph()
+def observe_enum_in_graph(c: Color) -> str:
+    """Rebuild the member from what a ``@task.graph`` body receives."""
+    return echo_str(s=Color(getattr(c, 'value', c)).name)
+
+
+def _node_graph_rebuilds_enums() -> bool:
+    """Return whether the installed ``node_graph`` reconstructs Enum sockets.
+
+    ``coerce_inputs_from_spec`` rebuilds a socket's value only from the
+    ``structured_type`` descriptor its spec records, so a descriptor for an
+    ``Enum`` type is exactly the capability.
+    """
+    from node_graph.utils.struct_utils import structured_type_info
+
+    return structured_type_info(Color) is not None
+
+
+def test_enum_input_rebuilds_to_the_member_that_was_passed(aiida_profile):
+    """``_flatten_enums`` loses nothing the member cannot be rebuilt from:
+    ``Color(getattr(c, 'value', c))`` returns ``Color.RED`` in both a function
+    task's body and a ``@task.graph`` body, whatever form the boundary
+    delivered (the flattened ``'red'``, the stored ``orm.Str`` behind a
+    ``TaggedValue``, or the member behind one)."""
+    wg = WorkGraph('enum_roundtrip')
+    fn = wg.add_task(observe_enum, name='observe', c=Color.RED)
+    gr = wg.add_task(observe_enum_in_graph, name='observe_graph', c=Color.RED)
+    wg.run()
+    assert wg.state == 'FINISHED'
+    assert fn.outputs['rebuilt_name'].value.value == 'RED'
+    assert gr.outputs['result'].value.value == 'RED'
+
+
+def test_enum_arrival_follows_the_node_graph_capability(aiida_profile):
+    """Which form arrives is the installed ``node_graph``'s call, not this
+    package's: the ``Enum`` member when its specs carry a ``structured_type``
+    descriptor for ``Enum``, the flattened value otherwise. Asserting the two
+    agree pins the packages to each other rather than to a version, so a
+    reconstruction that stops working still fails here."""
+    wg = WorkGraph('enum_arrival')
+    t = wg.add_task(observe_enum, name='observe', c=Color.RED)
+    wg.run()
+    assert wg.state == 'FINISHED'
+    rebuilds = _node_graph_rebuilds_enums()
+    assert t.outputs['is_member'].value.value is rebuilds
+    assert t.outputs['type_name'].value.value == ('Color' if rebuilds else 'str')
