@@ -137,7 +137,7 @@ def observe_enum(c: Color) -> dict:
     return {
         'type_name': type(c).__name__,
         'is_member': isinstance(c, Color),
-        'rebuilt_name': Color(c).name,
+        'rebuilt_name': Color(getattr(c, 'value', c)).name,
     }
 
 
@@ -149,7 +149,7 @@ def echo_str(s: str) -> str:
 @task.graph()
 def observe_enum_in_graph(c: Color) -> str:
     """Rebuild the member from what a ``@task.graph`` body receives."""
-    return echo_str(s=Color(c).name)
+    return echo_str(s=Color(getattr(c, 'value', c)).name)
 
 
 def _node_graph_rebuilds_enums() -> bool:
@@ -166,9 +166,10 @@ def _node_graph_rebuilds_enums() -> bool:
 
 def test_enum_input_rebuilds_to_the_member_that_was_passed(aiida_profile):
     """``_flatten_enums`` loses nothing the member cannot be rebuilt from:
-    ``Color(c)`` returns ``Color.RED`` in both a function task's body and a
-    ``@task.graph`` body, whatever form the boundary delivered (the flattened
-    ``'red'``, the stored ``orm.Str`` behind a ``TaggedValue``, or the member)."""
+    ``Color(getattr(c, 'value', c))`` returns ``Color.RED`` in both a function
+    task's body and a ``@task.graph`` body, whatever form the boundary
+    delivered (the flattened ``'red'``, the stored ``orm.Str`` behind a
+    ``TaggedValue``, or the member behind one)."""
     wg = WorkGraph('enum_roundtrip')
     fn = wg.add_task(observe_enum, name='observe', c=Color.RED)
     gr = wg.add_task(observe_enum_in_graph, name='observe_graph', c=Color.RED)

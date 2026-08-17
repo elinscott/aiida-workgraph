@@ -26,8 +26,10 @@ def _flatten_enums(value: Any) -> Any:
     ``structured_type`` descriptor its spec records, and not every
     ``node_graph`` records one for ``Enum``. Without it a function task's
     body receives the bare value and a ``@task.graph`` body the stored
-    ``orm.Str``; with it both receive the member. A body that must work
-    under either writes ``Color(c)``, never ``c is Color.RED``. See
+    ``orm.Str``; with it both receive the member, a ``@task.graph`` body
+    behind a ``TaggedValue``. A body that must work under either writes
+    ``Color(getattr(c, 'value', c))``, never ``Color(c)`` and never
+    ``c is Color.RED``. See
     ``tests/test_serializer.py::test_enum_arrival_follows_the_node_graph_capability``.
 
     ``set``/``frozenset`` are deliberately left untouched: a set fails in
