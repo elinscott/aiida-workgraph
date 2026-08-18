@@ -139,6 +139,25 @@ def test_empty_label_survives_save(wg_task):
     assert wg.process.label == ''
 
 
+def test_explicit_label_survives_run(wg_task):
+    """An explicit ``metadata.label`` passed to ``run()`` must survive on the process node."""
+    wg = wg_task
+    wg.name = 'test_explicit_label_survives_run'
+    wg.run(metadata={'label': 'my-explicit-label'})
+    assert wg.process.process_label == 'WorkGraph<test_explicit_label_survives_run>'
+    assert wg.process.label == 'my-explicit-label'
+
+
+@pytest.mark.usefixtures('started_daemon_client')
+def test_explicit_label_survives_submit(wg_task):
+    """An explicit ``metadata.label`` passed to ``submit()`` must survive on the process node."""
+    wg = wg_task
+    wg.name = 'test_explicit_label_survives_submit'
+    wg.submit(metadata={'label': 'my-explicit-label'}, wait=True, timeout=30)
+    assert wg.process.process_label == 'WorkGraph<test_explicit_label_survives_submit>'
+    assert wg.process.label == 'my-explicit-label'
+
+
 def test_explicit_label_survives_nested_graph():
     """An explicit ``metadata.label`` on a nested ``@task.graph`` call survives to the child node."""
 
