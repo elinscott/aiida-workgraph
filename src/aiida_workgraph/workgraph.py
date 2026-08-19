@@ -44,6 +44,7 @@ class WorkGraph(node_graph.Graph):
         error_handlers: Optional[Dict[str, ErrorHandlerSpec]] = None,
         serialization: Optional[object] = None,
         serialization_policy: str = 'off',
+        label: Optional[str] = None,
         **kwargs,
     ) -> None:
         """
@@ -51,6 +52,10 @@ class WorkGraph(node_graph.Graph):
 
         Args:
             name (str, optional): The name of the WorkGraph. Defaults to 'WorkGraph'.
+            label (str, optional): Display label forwarded to the process node's
+                ``metadata.label`` on `run`/`submit`, unless the caller passes an
+                explicit `metadata.label` there. Distinct from `name`, which is
+                identity and backs `process_label`.
             **kwargs: Additional keyword arguments to be passed to the WorkGraph class.
         """
         from aiida_workgraph.serialization import AiidaSerializationAdapter
@@ -69,12 +74,15 @@ class WorkGraph(node_graph.Graph):
         self.restart_process = None
         self.max_number_jobs = 1000000
         self.max_iteration = 1000000
+        self.label = label
         self._error_handlers = error_handlers or {}
         self.analyzer = GraphAnalysis(self)
 
     def to_engine_inputs(self, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         wgdata = self.to_dict(should_serialize=True)
-        metadata = metadata or {}
+        metadata = dict(metadata) if metadata else {}
+        if 'label' not in metadata and self.label is not None:
+            metadata['label'] = self.label
         task_inputs = self.gather_task_inputs(wgdata['tasks'])
         graph_inputs = task_inputs.pop('graph_inputs', {})
         inputs = {
@@ -247,6 +255,7 @@ class WorkGraph(node_graph.Graph):
                 'restart_process': self.restart_process.pk if self.restart_process else None,
                 'max_iteration': self.max_iteration,
                 'max_number_jobs': self.max_number_jobs,
+                'label': self.label,
             }
         )
         # save error handlers
@@ -341,6 +350,7 @@ class WorkGraph(node_graph.Graph):
             'max_iteration',
             'max_number_jobs',
             'connectivity',
+            'label',
         ]:
             if key in wgdata:
                 setattr(wg, key, wgdata[key])

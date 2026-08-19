@@ -181,6 +181,65 @@ def test_explicit_label_survives_nested_graph():
     assert called[0].label == 'nested-explicit-label'
 
 
+def test_label_forwarded_to_run(wg_task):
+    """``WorkGraph.label`` is forwarded to the process node's ``label`` on ``run()``."""
+    wg = wg_task
+    wg.name = 'test_label_forwarded_to_run'
+    wg.label = 'Human-readable label'
+    wg.run()
+    assert wg.process.process_label == 'WorkGraph<test_label_forwarded_to_run>'
+    assert wg.process.label == 'Human-readable label'
+
+
+def test_label_unset_falls_back_to_name(wg_task):
+    """Without ``WorkGraph.label``, ``run()`` keeps today's behavior: the process node's
+    ``label`` falls back to the workgraph name."""
+    wg = wg_task
+    wg.name = 'test_label_unset_falls_back_to_name'
+    assert wg.label is None
+    wg.run()
+    assert wg.process.label == 'test_label_unset_falls_back_to_name'
+
+
+def test_explicit_metadata_label_overrides_wg_label(wg_task):
+    """An explicit ``metadata={'label': ...}`` at launch time wins over ``WorkGraph.label``."""
+    wg = wg_task
+    wg.name = 'test_explicit_metadata_label_overrides_wg_label'
+    wg.label = 'graph-level label'
+    wg.run(metadata={'label': 'launch-time label'})
+    assert wg.process.label == 'launch-time label'
+
+
+def test_label_does_not_affect_name_or_process_label(wg_task):
+    """Setting ``WorkGraph.label`` leaves identity (``name``/``process_label``) untouched."""
+    wg = wg_task
+    wg.name = 'test_label_does_not_affect_name_or_process_label'
+    wg.label = 'some display label'
+    wg.run()
+    assert wg.name == 'test_label_does_not_affect_name_or_process_label'
+    assert wg.process.process_label == 'WorkGraph<test_label_does_not_affect_name_or_process_label>'
+
+
+@pytest.mark.usefixtures('started_daemon_client')
+def test_label_forwarded_to_submit(wg_task):
+    """``WorkGraph.label`` is forwarded to the process node's ``label`` on ``submit()``."""
+    wg = wg_task
+    wg.name = 'test_label_forwarded_to_submit'
+    wg.label = 'Human-readable label'
+    wg.submit(wait=True, timeout=30)
+    assert wg.process.label == 'Human-readable label'
+
+
+def test_label_roundtrips_through_dict(decorated_add):
+    """``WorkGraph.label`` survives a ``to_dict``/``from_dict`` round trip."""
+    wg = WorkGraph('test_label_roundtrips_through_dict', label='round-trip label')
+    wg.add_task(decorated_add, x=2, y=3)
+    wgdata = wg.to_dict()
+    wg2 = WorkGraph.from_dict(wgdata)
+    assert wg2.label == 'round-trip label'
+    assert wg2.name == 'test_label_roundtrips_through_dict'
+
+
 def test_load_failure(create_process_node):
     node = create_process_node()
     with pytest.raises(ValueError, match=f'Process {node.pk} is not a WorkGraph'):
