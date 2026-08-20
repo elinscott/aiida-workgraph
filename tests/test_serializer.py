@@ -1,3 +1,4 @@
+from collections import OrderedDict, defaultdict, namedtuple
 from enum import Enum, IntEnum
 
 from aiida_workgraph import WorkGraph, task
@@ -84,6 +85,45 @@ def test_flatten_passthrough_of_enum_free_payload():
     """An enum-free payload comes back with identical values."""
     payload = {'n': 3, 'items': [1, 'two', (3.0, None)], 'flag': True}
     assert _flatten_enums(payload) == payload
+
+
+def test_flatten_passthrough_preserves_namedtuple_type():
+    """An enum-free namedtuple comes back as the exact same object, not
+    downgraded to a plain tuple."""
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    out = _flatten_enums(p)
+    assert out is p
+    assert isinstance(out, Point)
+
+
+def test_flatten_namedtuple_with_enum_still_flattens():
+    """A namedtuple carrying an Enum member still flattens its contents."""
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(Color.RED, 2)
+    out = _flatten_enums(p)
+    assert out == ('red', 2)
+
+
+def test_flatten_passthrough_preserves_dict_subclass_type():
+    """An enum-free OrderedDict/defaultdict comes back as the exact same
+    object, not downgraded to a plain dict."""
+    od = OrderedDict([('a', 1), ('b', 2)])
+    assert _flatten_enums(od) is od
+
+    dd: defaultdict = defaultdict(int, {'a': 1})
+    assert _flatten_enums(dd) is dd
+
+
+def test_flatten_dict_subclass_with_enum_still_flattens():
+    """An OrderedDict/defaultdict carrying an Enum still flattens its
+    values (into a plain dict -- rebuilding the original subclass is not
+    attempted for the changed case)."""
+    od = OrderedDict([('a', Color.RED), ('b', 2)])
+    assert _flatten_enums(od) == {'a': 'red', 'b': 2}
+
+    dd: defaultdict = defaultdict(int, {'a': Priority.LOW})
+    assert _flatten_enums(dd) == {'a': 1}
 
 
 def test_flatten_wrapt_proxied_enum_member():

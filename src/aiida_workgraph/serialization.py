@@ -37,24 +37,38 @@ def _flatten_enums(value: Any) -> Any:
     no registered serializer), so descending into one to flatten enums would
     not make it serializable -- see
     ``tests/test_serializer.py::test_flatten_leaves_sets_untouched``.
+
+    A container with no Enum anywhere inside it comes back as the exact
+    object passed in, not a rebuilt plain ``dict``/``tuple``. Rebuilding
+    unconditionally would downgrade a ``namedtuple`` to a bare ``tuple`` or
+    an ``OrderedDict``/``defaultdict`` to a plain ``dict`` even when nothing
+    needed flattening -- see
+    ``tests/test_serializer.py::test_flatten_passthrough_preserves_namedtuple_type``
+    and ``::test_flatten_passthrough_preserves_dict_subclass_type``.
     """
     if isinstance(value, Enum):
         return _flatten_enums(value.value)
     if isinstance(value, dict):
         out: Dict[Any, Any] = {}
+        changed = False
         for k, v in value.items():
             flat_key = _flatten_enums(k)
+            flat_val = _flatten_enums(v)
+            if flat_key is not k or flat_val is not v:
+                changed = True
             if flat_key in out:
                 # Two distinct keys (e.g. an Enum member and its bare value,
                 # or two members sharing a ``.value``) collapse to one; raise
                 # rather than silently drop an entry.
                 raise ValueError(f'Enum key flattening collision: multiple keys map to {flat_key!r}')
-            out[flat_key] = _flatten_enums(v)
-        return out
+            out[flat_key] = flat_val
+        return out if changed else value
     if isinstance(value, list):
-        return [_flatten_enums(v) for v in value]
+        flat_list = [_flatten_enums(v) for v in value]
+        return flat_list if any(fv is not v for fv, v in zip(flat_list, value)) else value
     if isinstance(value, tuple):
-        return tuple(_flatten_enums(v) for v in value)
+        flat_tuple = tuple(_flatten_enums(v) for v in value)
+        return flat_tuple if any(fv is not v for fv, v in zip(flat_tuple, value)) else value
     return value
 
 
