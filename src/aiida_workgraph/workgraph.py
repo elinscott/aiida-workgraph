@@ -6,6 +6,7 @@ import aiida
 from aiida_workgraph.task import Task
 from aiida_workgraph.enums import TaskAction, TaskState
 import time
+from collections import UserDict
 from typing import Any, Dict, List, Optional, Union
 from .registry import RegistryHub, registry_hub
 from node_graph.analysis import GraphAnalysis
@@ -15,6 +16,36 @@ from aiida_workgraph.socket_spec import SocketSpecAPI
 from node_graph.error_handler import ErrorHandlerSpec
 
 LOGGER = logging.getLogger(__name__)
+
+
+class MetadataDict(UserDict):
+    """A dict that rejects keys outside a declared set, on every mutation.
+
+    Backs `WorkGraph.metadata`: `wg.metadata['bad_key'] = 1` raises immediately,
+    at the point of assignment, rather than only once it reaches launch or
+    serialization. `UserDict` routes `update()`/`setdefault()`/`|=` through
+    `__setitem__`, unlike a plain `dict` subclass, so every mutation path is
+    covered by the one check below.
+
+    `validate_seed=False` skips validating the *initial* contents — used only
+    when wrapping a dict `Graph.__init__`/`from_dict()` already decided about
+    (validated at fresh construction, deliberately left unvalidated when
+    reconstructing, so metadata keys an older version wrote still load). Every
+    mutation after construction validates regardless of `validate_seed`.
+    """
+
+    def __init__(self, *args, declared_keys: frozenset = frozenset(), validate_seed: bool = True, **kwargs) -> None:
+        self._declared_keys = declared_keys
+        if validate_seed:
+            self.data = {}
+            self.update(*args, **kwargs)
+        else:
+            self.data = dict(*args, **kwargs)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key not in self._declared_keys:
+            raise ValueError(f'Unknown metadata key {key!r}. Valid keys: {sorted(self._declared_keys)}.')
+        super().__setitem__(key, value)
 
 
 class WorkGraph(node_graph.Graph):
@@ -36,6 +67,32 @@ class WorkGraph(node_graph.Graph):
 
     platform: str = 'aiida_workgraph'
 
+    # `metadata` keys, side by side: AiiDA's own process-launch metadata port names
+    # (`label`, `description`, ...) union node-graph's serialization bookkeeping
+    # keys (`graph_type`, `graph_class`) union this class's own `pk`. Populated once,
+    # lazily, by `_ensure_declared_metadata_keys` — see there for why not eagerly.
+    _engine_metadata_keys: frozenset = frozenset()
+    _declared_metadata_keys: frozenset = frozenset()
+    _validate_metadata_keys = True
+
+    @classmethod
+    def _ensure_declared_metadata_keys(cls) -> None:
+        """Populate `_engine_metadata_keys`/`_declared_metadata_keys`, once, on first use.
+
+        Deferred rather than computed at class-body time: it imports
+        `WorkGraphEngine` and builds its AiiDA process spec, both too heavy —
+        and too coupled to a configured AiiDA environment — to pay at package
+        import time. `_engine_metadata_keys` itself, not a hand-picked list, is
+        the source of truth for which keys AiiDA's launch path understands.
+        """
+        if WorkGraph._engine_metadata_keys:
+            return
+        from aiida_workgraph.engine.workgraph import WorkGraphEngine
+
+        engine_keys = frozenset(WorkGraphEngine.spec().inputs['metadata'].keys())
+        WorkGraph._engine_metadata_keys = engine_keys
+        WorkGraph._declared_metadata_keys = node_graph.Graph._declared_metadata_keys | {'pk'} | engine_keys
+
     def __init__(
         self,
         name: str = 'WorkGraph',
@@ -52,9 +109,12 @@ class WorkGraph(node_graph.Graph):
         Args:
             name (str, optional): The name of the WorkGraph. Defaults to 'WorkGraph'.
             **kwargs: Additional keyword arguments to be passed to the WorkGraph class.
+                A `metadata` kwarg here is the unified metadata dict — see
+                `WorkGraph.metadata`.
         """
         from aiida_workgraph.serialization import AiidaSerializationAdapter
 
+        self._ensure_declared_metadata_keys()
         if serialization is None:
             serialization = AiidaSerializationAdapter()
         super().__init__(
@@ -65,6 +125,10 @@ class WorkGraph(node_graph.Graph):
             serialization_policy=serialization_policy,
             **kwargs,
         )
+        # `Graph.__init__` above already decided whether to validate this dict's keys
+        # (validated for fresh construction, skipped when `from_dict()` is reconstructing
+        # a graph, so metadata keys an older version wrote still load) — don't re-check.
+        self._metadata = MetadataDict(self._metadata, declared_keys=self._declared_metadata_keys, validate_seed=False)
         self.process = None
         self.restart_process = None
         self.max_number_jobs = 1000000
@@ -72,9 +136,29 @@ class WorkGraph(node_graph.Graph):
         self._error_handlers = error_handlers or {}
         self.analyzer = GraphAnalysis(self)
 
+    @property
+    def metadata(self) -> MetadataDict:
+        """Unified metadata: AiiDA launch keys and node-graph bookkeeping keys, side by side.
+
+        AiiDA launch keys (`label`, `description`, `call_link_label`,
+        `disable_cache`, `store_provenance`) are forwarded to `run()`/`submit()`,
+        an explicit launch-time `metadata` argument winning key-by-key. Bookkeeping
+        keys (`graph_type`, `graph_class`, `pk`) are node-graph's and this class's
+        own serialization state. Both round-trip together through the existing
+        `wgdata['metadata']` slot. A key outside `_declared_metadata_keys` raises
+        `ValueError` immediately, whether set here or passed to the constructor.
+        """
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, value: Optional[Dict[str, Any]]) -> None:
+        self._metadata = MetadataDict(value or {}, declared_keys=self._declared_metadata_keys)
+
     def to_engine_inputs(self, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         wgdata = self.to_dict(should_serialize=True)
-        metadata = metadata or {}
+        launch_metadata = {key: value for key, value in self.metadata.items() if key in self._engine_metadata_keys}
+        launch_metadata.update(metadata or {})
+        metadata = launch_metadata
         task_inputs = self.gather_task_inputs(wgdata['tasks'])
         graph_inputs = task_inputs.pop('graph_inputs', {})
         inputs = {

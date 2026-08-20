@@ -181,6 +181,176 @@ def test_explicit_label_survives_nested_graph():
     assert called[0].label == 'nested-explicit-label'
 
 
+def test_wg_metadata_forwarded_to_run_via_constructor():
+    """A ``label`` set through the constructor's ``metadata`` kwarg reaches ``process.label`` on ``run()``."""
+    wg = WorkGraph('test_wg_metadata_forwarded_to_run_via_constructor', metadata={'label': 'Human-readable label'})
+    wg.run()
+    assert wg.process.process_label == 'WorkGraph<test_wg_metadata_forwarded_to_run_via_constructor>'
+    assert wg.process.label == 'Human-readable label'
+
+
+def test_wg_metadata_forwarded_to_run_via_attribute(wg_task):
+    """A ``label`` set through the ``wg.metadata`` attribute reaches ``process.label`` on ``run()``."""
+    wg = wg_task
+    wg.name = 'test_wg_metadata_forwarded_to_run_via_attribute'
+    wg.metadata['label'] = 'Human-readable label'
+    wg.run()
+    assert wg.process.label == 'Human-readable label'
+
+
+@pytest.mark.usefixtures('started_daemon_client')
+def test_wg_metadata_forwarded_to_submit(wg_task):
+    """``wg.metadata['label']`` is forwarded to the process node's ``label`` on ``submit()``."""
+    wg = wg_task
+    wg.name = 'test_wg_metadata_forwarded_to_submit'
+    wg.metadata['label'] = 'Human-readable label'
+    wg.submit(wait=True, timeout=30)
+    assert wg.process.label == 'Human-readable label'
+
+
+def test_wg_metadata_unset_falls_back_to_name(wg_task):
+    """With no ``label`` in ``wg.metadata``, ``process.label`` falls back to the workgraph name
+    exactly as it does today (pins current behavior)."""
+    wg = wg_task
+    wg.name = 'test_wg_metadata_unset_falls_back_to_name'
+    assert 'label' not in wg.metadata
+    wg.run()
+    assert wg.process.label == 'test_wg_metadata_unset_falls_back_to_name'
+
+
+def test_launch_metadata_overrides_wg_metadata(wg_task):
+    """An explicit ``metadata={'label': ...}`` at launch time wins over ``wg.metadata['label']``."""
+    wg = wg_task
+    wg.name = 'test_launch_metadata_overrides_wg_metadata'
+    wg.metadata['label'] = 'graph-level label'
+    wg.run(metadata={'label': 'launch-time label'})
+    assert wg.process.label == 'launch-time label'
+
+
+def test_wg_metadata_merge_semantics(wg_task):
+    """Launch-time metadata overrides matching keys; other ``wg.metadata`` keys survive."""
+    wg = wg_task
+    wg.name = 'test_wg_metadata_merge_semantics'
+    wg.metadata['label'] = 'graph-level label'
+    wg.metadata['description'] = 'graph-level description'
+    wg.run(metadata={'label': 'launch-time label'})
+    assert wg.process.label == 'launch-time label'
+    assert wg.process.description == 'graph-level description'
+
+
+def test_wg_metadata_does_not_affect_name_or_process_label(wg_task):
+    """Setting ``wg.metadata`` leaves identity (``name``/``process_label``) untouched."""
+    wg = wg_task
+    wg.name = 'test_wg_metadata_does_not_affect_name_or_process_label'
+    wg.metadata['label'] = 'some display label'
+    wg.run()
+    assert wg.name == 'test_wg_metadata_does_not_affect_name_or_process_label'
+    assert wg.process.process_label == 'WorkGraph<test_wg_metadata_does_not_affect_name_or_process_label>'
+
+
+def test_wg_metadata_roundtrips_through_dict(decorated_add):
+    """``wg.metadata`` survives a ``to_dict``/``from_dict`` round trip, in the existing ``metadata`` slot."""
+    wg = WorkGraph('test_wg_metadata_roundtrips_through_dict', metadata={'label': 'round-trip label'})
+    wg.add_task(decorated_add, x=2, y=3)
+    wgdata = wg.to_dict()
+    assert wgdata['metadata']['label'] == 'round-trip label'
+    wg2 = WorkGraph.from_dict(wgdata)
+    assert wg2.metadata['label'] == 'round-trip label'
+    assert wg2.name == 'test_wg_metadata_roundtrips_through_dict'
+
+
+def test_wg_metadata_bad_key_raises_on_attribute_assignment(wg_task):
+    """``wg.metadata['bad_key'] = ...`` raises immediately, naming the valid keys."""
+    wg = wg_task
+    with pytest.raises(ValueError, match="Unknown metadata key 'bad_key'"):
+        wg.metadata['bad_key'] = 1
+
+
+def test_wg_metadata_bad_key_raises_on_construction():
+    """A bad key in the constructor's ``metadata`` kwarg raises immediately, not just at launch."""
+    with pytest.raises(ValueError, match="Unknown metadata key.*'bad_key'"):
+        WorkGraph('test_wg_metadata_bad_key_raises_on_construction', metadata={'bad_key': 1})
+
+
+def test_wg_metadata_declared_keys_disjoint_from_bookkeeping():
+    """AiiDA's launch-metadata port names never collide with node-graph's bookkeeping keys.
+
+    This is the tripwire for the #812 collision: if node-graph or aiida-workgraph ever
+    declared a bookkeeping key with the same name as an AiiDA metadata port, `to_engine_inputs`
+    could no longer tell which family a key belongs to, and a bookkeeping value could leak into
+    the process launch inputs (or vice versa). This must fail at definition time, not silently.
+    """
+    bookkeeping_keys = WorkGraph._declared_metadata_keys - WorkGraph._engine_metadata_keys
+    assert bookkeeping_keys.isdisjoint(WorkGraph._engine_metadata_keys)
+    # sanity: the bookkeeping side is non-empty and known, not an accidental empty set
+    assert bookkeeping_keys == {'graph_type', 'graph_class', 'definition', 'pk'}
+
+
+def test_wg_metadata_task_graph_build_definition_key_not_rejected():
+    """A nested ``@task.graph`` build writes node-graph's own ``definition`` bookkeeping key
+    into the built graph's metadata (via ``graph._metadata.setdefault('definition', ...)``,
+    node_graph/utils/graph.py). That write must not be rejected by `WorkGraph`'s validating
+    metadata just because the key isn't an AiiDA launch key — it's declared bookkeeping too.
+    """
+
+    @task()
+    def add(x, y):
+        return x + y
+
+    @task.graph()
+    def inner_graph(x, y):
+        return add(x, y).result
+
+    with WorkGraph('test_wg_metadata_task_graph_build_definition_key_not_rejected') as wg:
+        inner_graph(1, 2)
+        wg.run()
+
+    assert wg.process.is_finished_ok
+
+
+def test_wg_metadata_legacy_wgdata_loads(decorated_add):
+    """A ``wgdata`` whose ``metadata`` carries only bookkeeping keys (no AiiDA launch keys) —
+    the shape written before this feature existed — still loads without error."""
+    wg = WorkGraph('test_wg_metadata_legacy_wgdata_loads')
+    wg.add_task(decorated_add, x=2, y=3)
+    wgdata = wg.to_dict()
+    assert set(wgdata['metadata']) <= {'graph_type', 'graph_class', 'pk'}
+    wg2 = WorkGraph.from_dict(wgdata)
+    assert 'label' not in wg2.metadata
+    assert wg2.name == 'test_wg_metadata_legacy_wgdata_loads'
+
+
+def test_wg_metadata_unrecognized_legacy_key_still_loads(decorated_add):
+    """A ``wgdata`` carrying a metadata key this schema has never declared — the real
+    situation in ``tests/datas/test_calcfunction.yaml``, which has ``platform`` and
+    ``worker_name`` from an earlier aiida-workgraph version, written by no current
+    code — loads without error. Validation governs new writes, not old data:
+    round-tripping it back out preserves the unrecognized key, but writing it fresh
+    still raises (asserted by ``test_wg_metadata_bad_key_raises_on_attribute_assignment``).
+    """
+    wg = WorkGraph('test_wg_metadata_unrecognized_legacy_key_still_loads')
+    wg.add_task(decorated_add, x=2, y=3)
+    wgdata = wg.to_dict()
+    wgdata['metadata']['worker_name'] = 'localhost'
+    wg2 = WorkGraph.from_dict(wgdata)
+    assert wg2.metadata['worker_name'] == 'localhost'
+    assert wg2.to_dict()['metadata']['worker_name'] == 'localhost'
+    with pytest.raises(ValueError, match="Unknown metadata key 'worker_name'"):
+        wg2.metadata['worker_name'] = 'a-different-worker'
+
+
+def test_wg_metadata_unset_graph_serializes_like_before(decorated_add):
+    """A graph that never touches ``wg.metadata`` serializes exactly as it did before this feature."""
+    wg = WorkGraph('test_wg_metadata_unset_graph_serializes_like_before')
+    wg.add_task(decorated_add, x=2, y=3)
+    wgdata = wg.to_dict()
+    assert wgdata['metadata'] == {
+        'graph_type': 'NORMAL',
+        'graph_class': {'callable_name': 'WorkGraph', 'module_path': 'aiida_workgraph.workgraph'},
+        'pk': None,
+    }
+
+
 def test_load_failure(create_process_node):
     node = create_process_node()
     with pytest.raises(ValueError, match=f'Process {node.pk} is not a WorkGraph'):
