@@ -351,6 +351,69 @@ def test_wg_metadata_unset_graph_serializes_like_before(decorated_add):
     }
 
 
+@pytest.mark.parametrize(
+    'mutate',
+    [
+        lambda md: md.update({'bogus': 1}),
+        lambda md: md.update(bogus=1),
+        lambda md: md.update([('bogus', 1)]),
+        lambda md: md.setdefault('bogus', 1),
+        lambda md: md.__setitem__('bogus', 1),
+        lambda md: md.__ior__({'bogus': 1}),
+    ],
+    ids=['update_dict', 'update_kwargs', 'update_pairs', 'setdefault', 'setitem', 'ior'],
+)
+def test_wg_metadata_all_mutation_paths_reject_bad_key(wg_task, mutate):
+    """Every mutation path on ``wg.metadata`` — ``update()`` in its three calling
+    conventions, ``setdefault()``, plain assignment, and ``|=`` — rejects an
+    undeclared key, and none of them leave it behind."""
+    wg = wg_task
+    with pytest.raises(ValueError, match="Unknown metadata key"):
+        mutate(wg.metadata)
+    assert 'bogus' not in wg.metadata
+
+
+def test_wg_metadata_ior_bad_key_does_not_mutate(wg_task):
+    """``wg.metadata |= {'good': ..., 'bad_key': ...}`` rejects without applying
+    even the declared key in the same dict: the whole union either lands or none
+    of it does."""
+    wg = wg_task
+    with pytest.raises(ValueError, match="Unknown metadata key"):
+        wg.metadata |= {'label': 'should not stick', 'bad_key': 1}
+    assert 'label' not in wg.metadata
+    assert 'bad_key' not in wg.metadata
+
+
+def test_wg_metadata_or_valid_key_returns_working_dict(wg_task):
+    """``wg.metadata | {...}`` with a declared key returns a new, still-validating
+    ``MetadataDict`` — not a hole opened by ``UserDict.__or__`` dropping
+    ``declared_keys`` on the reconstructed instance."""
+    wg = wg_task
+    merged = wg.metadata | {'description': 'also valid'}
+    assert merged['description'] == 'also valid'
+    assert type(merged).__name__ == 'MetadataDict'
+    with pytest.raises(ValueError, match="Unknown metadata key"):
+        merged['bad_key'] = 1
+    # the original is untouched
+    assert 'description' not in wg.metadata
+
+
+def test_wg_metadata_or_bad_key_rejects(wg_task):
+    """``wg.metadata | {...}`` with an undeclared key raises rather than silently
+    building a graph-level metadata dict full of unread keys."""
+    wg = wg_task
+    with pytest.raises(ValueError, match="Unknown metadata key"):
+        wg.metadata | {'bad_key': 1}
+
+
+def test_wg_metadata_reflected_or_both_directions(wg_task):
+    """Reflected union (``{...} | wg.metadata``) behaves the same as ``wg.metadata | {...}``:
+    a declared key merges into a working dict, an undeclared key raises."""
+    wg = wg_task
+    merged = {'description': 'also valid'} | wg.metadata
+    assert merged['description'] == 'also valid'
+    with pytest.raises(ValueError, match="Unknown metadata key"):
+        {'bad_key': 1} | wg.metadata
 def test_load_failure(create_process_node):
     node = create_process_node()
     with pytest.raises(ValueError, match=f'Process {node.pk} is not a WorkGraph'):

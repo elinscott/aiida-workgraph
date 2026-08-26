@@ -23,9 +23,12 @@ class MetadataDict(UserDict):
 
     Backs `WorkGraph.metadata`: `wg.metadata['bad_key'] = 1` raises immediately,
     at the point of assignment, rather than only once it reaches launch or
-    serialization. `UserDict` routes `update()`/`setdefault()`/`|=` through
-    `__setitem__`, unlike a plain `dict` subclass, so every mutation path is
-    covered by the one check below.
+    serialization. `UserDict` routes `update()`/`setdefault()` through
+    `__setitem__`, so those two paths validate for free. `|`, `|=` and reflected
+    `|` do not: `UserDict` implements them by operating on `.data` directly (or,
+    for `|`, via `self.__class__(merged_dict)` — a single positional argument
+    that drops `declared_keys`, since it's constructor-only and not itself part
+    of the dict contents) — so this class overrides all three below.
 
     `validate_seed=False` skips validating the *initial* contents — used only
     when wrapping a dict `Graph.__init__`/`from_dict()` already decided about
@@ -46,6 +49,33 @@ class MetadataDict(UserDict):
         if key not in self._declared_keys:
             raise ValueError(f'Unknown metadata key {key!r}. Valid keys: {sorted(self._declared_keys)}.')
         super().__setitem__(key, value)
+
+    def _validated(self, other: Any) -> Dict[str, Any]:
+        """Return `other` as a plain dict, after checking every key is declared."""
+        incoming = other.data if isinstance(other, UserDict) else dict(other)
+        unknown = set(incoming) - self._declared_keys
+        if unknown:
+            raise ValueError(f'Unknown metadata key(s) {sorted(unknown)}. Valid keys: {sorted(self._declared_keys)}.')
+        return incoming
+
+    def __or__(self, other: Any) -> 'MetadataDict':
+        if not isinstance(other, (UserDict, dict)):
+            return NotImplemented
+        merged = self._validated(other)
+        return type(self)(self.data | merged, declared_keys=self._declared_keys)
+
+    def __ror__(self, other: Any) -> 'MetadataDict':
+        if not isinstance(other, dict):
+            return NotImplemented
+        merged = self._validated(other)
+        return type(self)(merged | self.data, declared_keys=self._declared_keys)
+
+    def __ior__(self, other: Any) -> 'MetadataDict':
+        # Validate every incoming key before mutating anything, so a bad key
+        # in a mixed dict rejects without partially applying the good ones.
+        merged = self._validated(other)
+        self.update(merged)
+        return self
 
 
 class WorkGraph(node_graph.Graph):
