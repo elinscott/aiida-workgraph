@@ -60,10 +60,26 @@ class AiidaSerializationAdapter(SerializationAdapter):
         ``int`` lands as ``orm.Int`` and downstream stdlib calls
         (``range(self.ntyp)``, etc.) fail with ``TypeError`` because
         ``orm.Int`` doesn't implement ``__index__``.
+
+        A ``TaggedValue`` -- node-graph's proxy marking a value that still
+        draws a link back to its owning graph-input socket -- keeps its tag:
+        the unwrap runs on the value it wraps, and the result is rewrapped in
+        a fresh ``TaggedValue`` pointing at the same socket. Returning the
+        bare unwrapped value instead makes a sub-task bound from it store a
+        new, unlinked copy of the graph input rather than draw provenance
+        from it.
         """
         from dataclasses import fields, is_dataclass, replace
 
         from aiida import orm
+        from node_graph.socket import TaggedValue
+
+        if isinstance(value, TaggedValue):
+            tag = value._socket
+            unwrapped = self.deserialize(value.__wrapped__, socket)
+            if unwrapped is value.__wrapped__:
+                return value
+            return TaggedValue(unwrapped, socket=tag)
 
         if isinstance(value, orm.BaseType):
             identifier = getattr(socket, '_identifier', None)
@@ -83,11 +99,21 @@ class AiidaSerializationAdapter(SerializationAdapter):
             return value.get_list()
 
         if is_dataclass(value) and not isinstance(value, type):
-            field_updates = {
-                f.name: getattr(value, f.name).value
-                for f in fields(value)
-                if isinstance(getattr(value, f.name), orm.BaseType)
-            }
+            # Each field is tagged independently of the dataclass instance as
+            # a whole (``tag_socket_value`` walks a structured socket down to
+            # its leaves), so the tag to preserve lives on the field value,
+            # not on ``value`` itself.
+            field_updates = {}
+            for f in fields(value):
+                field_value = getattr(value, f.name)
+                tag = None
+                raw = field_value
+                if isinstance(field_value, TaggedValue):
+                    tag = field_value._socket
+                    raw = field_value.__wrapped__
+                if isinstance(raw, orm.BaseType):
+                    plain = raw.value
+                    field_updates[f.name] = TaggedValue(plain, socket=tag) if tag is not None else plain
             if field_updates:
                 return replace(value, **field_updates)
 
