@@ -72,6 +72,33 @@ def _flatten_enums(value: Any) -> Any:
     return value
 
 
+def _to_declared_python(value: Any) -> Any:
+    """Return ``value`` with the node the write path wrapped it in taken off.
+
+    ``orm.BaseType``, ``orm.Dict`` and ``orm.List`` are the nodes the write
+    path creates for plain Python; every other ``orm.Data`` is a value in its
+    own right and is returned as it is. A tagged value keeps its tag, so a
+    graph body still draws a link from it.
+    """
+    from aiida import orm
+    from node_graph.socket import TaggedValue
+
+    if isinstance(value, TaggedValue):
+        plain = _to_declared_python(value.__wrapped__)
+        return plain if plain is value.__wrapped__ else TaggedValue(plain, socket=value._socket)
+    if isinstance(value, orm.BaseType):
+        return value.value
+    if isinstance(value, orm.Dict):
+        return value.get_dict()
+    if isinstance(value, orm.List):
+        return value.get_list()
+    if isinstance(value, dict):
+        return {key: _to_declared_python(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_to_declared_python(item) for item in value)
+    return value
+
+
 class AiidaSerializationAdapter(SerializationAdapter):
     id: str = 'aiida'
     name: str = 'AiiDA'
@@ -103,27 +130,31 @@ class AiidaSerializationAdapter(SerializationAdapter):
             user=self.user,
         )
 
-    def to_python(self, value: Any) -> Any:
-        """Return ``value`` with each AiiDA node replaced by the data it holds.
+    def deserialize(self, value: Any, socket: Any) -> Any:
+        """Give a model-owned socket's value the form the model's field declares.
 
-        A ``@task.graph`` body is handed storage nodes, which is what it needs
-        to draw links and not what a contract can be checked against: a model
-        declaring ``str`` refuses an ``orm.Str``. A node no deserializer can
-        render is left as it is, so a contract naming that type still sees it.
+        The write path promotes a plain Python value to the ``orm`` node that
+        carries it into provenance; this is the read edge that takes the node
+        off again, so a field declared ``str`` reaches the body as ``str``
+        rather than as ``orm.Str``. Which fields those are is the model's call
+        and not the socket identifier's: ``int`` and ``orm.Int`` are the same
+        identifier, and only the model says which of the two was written, so
+        the leaf's ``body_receives`` mark decides. A socket no model owns is
+        left to the base adapter.
+
+        The tag a value wears is put back on, because it is what a graph body
+        turns into a link: unwrapping without it would leave the body holding
+        a copy of the graph's input rather than a reference to it.
         """
-        from aiida import orm
-        from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
+        from node_graph.input_model import BODY_RECEIVES
 
-        if isinstance(value, orm.Data):
-            try:
-                return deserialize_to_raw_python_data(value)
-            except ValueError:
-                return value
-        if isinstance(value, dict):
-            return {key: self.to_python(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return type(value)(self.to_python(item) for item in value)
-        return value
+        extras = getattr(getattr(socket, '_metadata', None), 'extras', None) or {}
+        arrival = extras.get(BODY_RECEIVES)
+        if arrival is None:
+            return super().deserialize(value, socket)
+        if arrival == 'node':
+            return value
+        return _to_declared_python(value)
 
     def serialize_ports(self, python_data: Any, port_schema: Any, *, store: bool) -> Any:
         resolve_tagged_values(python_data)

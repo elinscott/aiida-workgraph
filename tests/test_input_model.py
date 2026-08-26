@@ -12,10 +12,14 @@ from __future__ import annotations
 
 import enum
 from decimal import Decimal
+from typing import Any
 
 import pytest
+from aiida import orm
+from node_graph.input_model import BODY_RECEIVES, ModelContractError
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     field_serializer,
     field_validator,
@@ -24,7 +28,6 @@ from pydantic import (
 
 from aiida_workgraph import WorkGraph, task
 from aiida_workgraph.socket_spec import spec_from_model
-from node_graph.input_model import ModelContractError
 
 #: aiida-pythonjob's exit status for a body that raised.
 FUNCTION_FAILED = 323
@@ -328,16 +331,134 @@ def test_a_graph_contract_reads_through_the_engines_wrappers():
     assert node.process.exit_status == 0
 
 
-def test_without_that_reading_every_str_field_would_be_refused(monkeypatch):
-    """The control: an adapter that hands the nodes on refuses `orm.Str` for a `str` field."""
+class Priced(BaseModel):
+    """A `Decimal` beside a `str`: one kind no socket identifier can carry."""
+
+    label: str
+    amount: Decimal
+
+
+@task()
+def show(label, amount):
+    return f'{label}-{amount}'
+
+
+@task.graph(input_model=Priced)
+def priced(label, amount):
+    return show(label=label, amount=str(amount))
+
+
+def test_a_graph_contract_reads_a_field_no_identifier_carries():
+    """`Decimal` is stored as the string the model rendered, and read back through the model."""
+    wg = WorkGraph('priced_ok')
+    node = wg.add_task(priced, name='priced', label='silicon', amount=Decimal('1.50'))
+    wg.run()
+    assert node.process.exit_status == 0
+
+
+def test_without_the_unwrap_that_field_would_be_refused(monkeypatch):
+    """The control: leave the node on and `Decimal` refuses the `orm.Str` holding its rendering.
+
+    The field is deliberately one a socket identifier cannot answer for -- it is
+    `workgraph.annotated`, not `workgraph.string` -- so the control still
+    discriminates under an adapter that unwraps by identifier.
+    """
+    from node_graph.serializer import SerializationAdapter
+
     from aiida_workgraph.serialization import AiidaSerializationAdapter
 
-    monkeypatch.setattr(AiidaSerializationAdapter, 'to_python', lambda self, value: value)
-    wg = WorkGraph('named_unread')
-    node = wg.add_task(named, name='named', label='silicon', count=2)
+    monkeypatch.setattr(AiidaSerializationAdapter, 'deserialize', SerializationAdapter.deserialize)
+    wg = WorkGraph('priced_unread')
+    node = wg.add_task(priced, name='priced', label='silicon', amount=Decimal('1.50'))
     wg.run()
     assert node.process is None
     assert node.state == 'FAILED'
+
+
+ARRIVED: dict = {}
+
+
+def _arrival(value):
+    """Return the type of what a body was handed, seeing through the tag it wears."""
+    return type(getattr(value, '__wrapped__', value)).__name__
+
+
+class EveryKind(BaseModel):
+    """One field per kind the read edge has to tell apart."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    text: str
+    number: int
+    fraction: float
+    flag: bool
+    mapping: dict
+    items: list
+    anything: Any
+    node: orm.Int
+
+
+@task.graph(input_model=EveryKind)
+def records_arrivals(text, number, fraction, flag, mapping, items, anything, node):
+    ARRIVED.clear()
+    ARRIVED.update(
+        text=_arrival(text),
+        number=_arrival(number),
+        fraction=_arrival(fraction),
+        flag=_arrival(flag),
+        mapping=_arrival(mapping),
+        items=_arrival(items),
+        anything=_arrival(anything),
+        node=_arrival(node),
+    )
+
+
+def test_a_body_receives_what_its_field_declares():
+    """Declared Python arrives as Python; `Any` and an AiiDA type arrive as nodes."""
+    wg = WorkGraph('arrivals')
+    wg.add_task(
+        records_arrivals,
+        name='r',
+        text='silicon',
+        number=3,
+        fraction=1.5,
+        flag=True,
+        mapping={'k': 1},
+        items=[1, 2],
+        anything='whatever',
+        node=orm.Int(7),
+    )
+    wg.run()
+    assert ARRIVED == {
+        'text': 'str',
+        'number': 'int',
+        'fraction': 'float',
+        'flag': 'bool',
+        'mapping': 'dict',
+        'items': 'list',
+        'anything': 'Str',
+        'node': 'Int',
+    }
+
+
+def test_the_socket_identifier_alone_cannot_tell_int_from_orm_int():
+    """Both are ``workgraph.int``; only the model says which of the two was declared."""
+    from aiida_workgraph.socket_spec import spec_from_model
+
+    spec = spec_from_model(EveryKind)
+    assert spec.fields['number'].identifier == spec.fields['node'].identifier
+    assert spec.fields['number'].meta.extras[BODY_RECEIVES] == 'python'
+    assert spec.fields['node'].meta.extras[BODY_RECEIVES] == 'node'
+
+
+def test_an_unwrapped_value_keeps_the_tag_that_draws_its_link():
+    """The body forwards a `str` field, and the child must be linked to it, not given a copy."""
+    wg = WorkGraph('linked')
+    node = wg.add_task(named, name='named', label='silicon', count=2)
+    wg.run()
+    graph = node.process.called[0] if node.process.called else None
+    assert node.process.exit_status == 0
+    assert graph is not None
 
 
 def test_a_runtime_value_is_checked_at_the_graph_it_reaches():
