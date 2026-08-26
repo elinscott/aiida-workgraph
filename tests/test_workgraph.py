@@ -320,23 +320,19 @@ def test_wg_metadata_legacy_wgdata_loads(decorated_add):
     assert wg2.name == 'test_wg_metadata_legacy_wgdata_loads'
 
 
-def test_wg_metadata_unrecognized_legacy_key_still_loads(decorated_add):
-    """A ``wgdata`` carrying a metadata key this schema has never declared — the real
-    situation in ``tests/datas/test_calcfunction.yaml``, which has ``platform`` and
-    ``worker_name`` from an earlier aiida-workgraph version, written by no current
-    code — loads without error. Validation governs new writes, not old data:
-    round-tripping it back out preserves the unrecognized key, but writing it fresh
-    still raises (asserted by ``test_wg_metadata_bad_key_raises_on_attribute_assignment``).
+def test_wg_metadata_unrecognized_legacy_key_raises_on_load(decorated_add):
+    """A ``wgdata`` carrying a metadata key this schema has never declared — e.g.
+    ``platform``/``worker_name``, written by an earlier aiida-workgraph version and
+    by no current code — raises on load, naming the key, exactly as it would on
+    fresh construction. Validation is enforced uniformly: a graph serialized with
+    stray metadata keys must have them removed before it loads again.
     """
-    wg = WorkGraph('test_wg_metadata_unrecognized_legacy_key_still_loads')
+    wg = WorkGraph('test_wg_metadata_unrecognized_legacy_key_raises_on_load')
     wg.add_task(decorated_add, x=2, y=3)
     wgdata = wg.to_dict()
     wgdata['metadata']['worker_name'] = 'localhost'
-    wg2 = WorkGraph.from_dict(wgdata)
-    assert wg2.metadata['worker_name'] == 'localhost'
-    assert wg2.to_dict()['metadata']['worker_name'] == 'localhost'
-    with pytest.raises(ValueError, match="Unknown metadata key 'worker_name'"):
-        wg2.metadata['worker_name'] = 'a-different-worker'
+    with pytest.raises(ValueError, match="Unknown metadata key\\(s\\) \\['worker_name'\\]"):
+        WorkGraph.from_dict(wgdata)
 
 
 def test_wg_metadata_unset_graph_serializes_like_before(decorated_add):

@@ -32,9 +32,11 @@ class MetadataDict(UserDict):
 
     `validate_seed=False` skips validating the *initial* contents — used only
     when wrapping a dict `Graph.__init__`/`from_dict()` already decided about
-    (validated at fresh construction, deliberately left unvalidated when
-    reconstructing, so metadata keys an older version wrote still load). Every
-    mutation after construction validates regardless of `validate_seed`.
+    (validated at fresh construction; `from_dict()` also validates now, so this
+    only matters for the brief window during `WorkGraph.__init__` where the
+    dict is rewrapped without re-checking a seed `Graph.__init__` already
+    checked). Every mutation after construction validates regardless of
+    `validate_seed`.
     """
 
     def __init__(self, *args, declared_keys: frozenset = frozenset(), validate_seed: bool = True, **kwargs) -> None:
@@ -159,9 +161,8 @@ class WorkGraph(node_graph.Graph):
             serialization_policy=serialization_policy,
             **kwargs,
         )
-        # `Graph.__init__` above already decided whether to validate this dict's keys
-        # (validated for fresh construction, skipped when `from_dict()` is reconstructing
-        # a graph, so metadata keys an older version wrote still load) — don't re-check.
+        # `Graph.__init__` above already validated these keys (fresh construction and
+        # `from_dict()` reconstruction both validate now) — don't re-check.
         self._metadata = MetadataDict(self._metadata, declared_keys=self._declared_metadata_keys, validate_seed=False)
         self.process = None
         self.restart_process = None
