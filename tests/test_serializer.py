@@ -171,13 +171,16 @@ def test_serialize_ports_accepts_enum_value(aiida_profile):
     assert out['c'].value == 'red'
 
 
-@task(outputs=['type_name', 'is_member', 'rebuilt_name'])
+@task(outputs=['type_name', 'is_member', 'equals_member', 'equals_value'])
 def observe_enum(c: Color) -> dict:
-    """Report what a function task's body receives for an Enum-typed input."""
+    """Report what a function task's body receives for an ``Enum``-typed
+    input, using only the annotation's contract (``==``), never a
+    reconstruction of the member."""
     return {
         'type_name': type(c).__name__,
         'is_member': isinstance(c, Color),
-        'rebuilt_name': Color(getattr(c, 'value', c)).name,
+        'equals_member': c == Color.RED,
+        'equals_value': c == 'red',
     }
 
 
@@ -188,8 +191,9 @@ def echo_str(s: str) -> str:
 
 @task.graph()
 def observe_enum_in_graph(c: Color) -> str:
-    """Rebuild the member from what a ``@task.graph`` body receives."""
-    return echo_str(s=Color(getattr(c, 'value', c)).name)
+    """Use the member a ``@task.graph`` body receives, as the annotation
+    declares it — no reconstruction."""
+    return echo_str(s=c.name)
 
 
 def _node_graph_rebuilds_enums() -> bool:
@@ -204,27 +208,15 @@ def _node_graph_rebuilds_enums() -> bool:
     return structured_type_info(Color) is not None
 
 
-def test_enum_input_rebuilds_to_the_member_that_was_passed(aiida_profile):
-    """``_flatten_enums`` loses nothing the member cannot be rebuilt from:
-    ``Color(getattr(c, 'value', c))`` returns ``Color.RED`` in both a function
-    task's body and a ``@task.graph`` body, whatever form the boundary
-    delivered (the flattened ``'red'``, the stored ``orm.Str`` behind a
-    ``TaggedValue``, or the member behind one)."""
-    wg = WorkGraph('enum_roundtrip')
-    fn = wg.add_task(observe_enum, name='observe', c=Color.RED)
-    gr = wg.add_task(observe_enum_in_graph, name='observe_graph', c=Color.RED)
-    wg.run()
-    assert wg.state == 'FINISHED'
-    assert fn.outputs['rebuilt_name'].value.value == 'RED'
-    assert gr.outputs['result'].value.value == 'RED'
-
-
 def test_enum_arrival_follows_the_node_graph_capability(aiida_profile):
-    """Which form arrives is the installed ``node_graph``'s call, not this
-    package's: the ``Enum`` member when its specs carry a ``structured_type``
-    descriptor for ``Enum``, the flattened value otherwise. Asserting the two
-    agree pins the packages to each other rather than to a version, so a
-    reconstruction that stops working still fails here."""
+    """A task body never reconstructs an ``Enum`` member by hand; the
+    annotation is the contract, and what arrives behind it is the installed
+    ``node_graph``'s call, not this package's. With a ``node_graph`` that
+    rebuilds ``Enum`` sockets (``_node_graph_rebuilds_enums``), a
+    ``Color``-annotated input arrives as the member: ``isinstance`` holds,
+    ``==`` against the member holds, ``type_name`` is ``'Color'``. Without
+    that capability it arrives as the flattened bare value: ``isinstance``
+    fails, ``==`` against the value holds, ``type_name`` is ``'str'``."""
     wg = WorkGraph('enum_arrival')
     t = wg.add_task(observe_enum, name='observe', c=Color.RED)
     wg.run()
@@ -232,3 +224,25 @@ def test_enum_arrival_follows_the_node_graph_capability(aiida_profile):
     rebuilds = _node_graph_rebuilds_enums()
     assert t.outputs['is_member'].value.value is rebuilds
     assert t.outputs['type_name'].value.value == ('Color' if rebuilds else 'str')
+    if rebuilds:
+        assert t.outputs['equals_member'].value.value is True
+    else:
+        assert t.outputs['equals_value'].value.value is True
+
+
+def test_enum_input_arrives_as_the_member_in_a_graph_body(aiida_profile):
+    """Only under a ``node_graph`` that rebuilds ``Enum`` sockets
+    (``_node_graph_rebuilds_enums``) can a ``@task.graph`` body use the
+    member directly, as its annotation declares (``c.name``, no
+    reconstruction)."""
+    if not _node_graph_rebuilds_enums():
+        pytest.skip(
+            'node_graph does not reconstruct Enum sockets '
+            '(structured_type_info(Color) is None); '
+            'observe_enum_in_graph requires the member to use c.name.'
+        )
+    wg = WorkGraph('enum_arrival_in_graph')
+    t = wg.add_task(observe_enum_in_graph, name='observe_graph', c=Color.RED)
+    wg.run()
+    assert wg.state == 'FINISHED'
+    assert t.outputs['result'].value.value == 'RED'
