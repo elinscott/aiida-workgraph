@@ -1,5 +1,7 @@
 from __future__ import annotations
-from typing import Callable, Dict, Optional, Union
+from dataclasses import replace
+from typing import Callable, Dict, Optional, Type, Union
+from pydantic import BaseModel
 from aiida.engine import calcfunction, workfunction, CalcJob, WorkChain
 from aiida_workgraph.task import Task
 from .workgraph import WorkGraph
@@ -7,10 +9,13 @@ import inspect
 from .task import TaskHandle
 from node_graph.task_spec import TaskSpec
 from node_graph.socket_spec import SocketSpec
+from aiida_workgraph.socket_spec import SocketSpecAPI
 from aiida_workgraph.tasks.aiida import _build_aiida_function_taskspec
 from node_graph.error_handler import ErrorHandlerSpec, normalize_error_handlers
 from aiida_workgraph.tasks.pythonjob_tasks import build_pyfunction_taskspec
 from aiida_workgraph.tasks.aiida import AiiDAProcessTask
+from node_graph.executor import RuntimeExecutor
+from node_graph.input_model import apply_models
 
 
 def _spec_for(
@@ -131,6 +136,8 @@ class TaskDecoratorCollection:
         outputs: Optional[SocketSpec | list] = None,
         error_handlers: Optional[Dict[str, ErrorHandlerSpec]] = None,
         catalog: str = 'Others',
+        input_model: Optional[Type[BaseModel]] = None,
+        output_model: Optional[Type[BaseModel]] = None,
     ) -> Callable:
         """Generate a decorator that register a function as a task.
 
@@ -139,21 +146,33 @@ class TaskDecoratorCollection:
             catalog (str): task catalog
             inputs (list): task inputs
             outputs (list): task outputs
+            input_model (BaseModel): model declaring the input sockets, checked at every
+                call and again before the body runs
+            output_model (BaseModel): model declaring the output sockets and validating
+                the return value
         """
 
         def decorator(obj: Union[WorkGraph, type, callable]) -> TaskHandle:
             normalized_handlers = normalize_error_handlers(error_handlers)
+            in_spec, out_spec, executor = apply_models(
+                obj, inputs, outputs, input_model, output_model, api=SocketSpecAPI
+            )
             spec = _spec_for(
                 obj,
                 identifier=identifier,
                 catalog=catalog,
-                inputs=inputs,
-                outputs=outputs,
+                inputs=in_spec,
+                outputs=out_spec,
                 error_handlers=normalized_handlers,
             )
+            if executor is not obj:
+                # The spec is inferred from the undecorated function, so its
+                # signature, source and return annotation stay visible; only
+                # what runs changes.
+                spec = replace(spec, executor=RuntimeExecutor.from_callable(executor))
 
             handle = TaskHandle(spec)
-            handle._callable = obj
+            handle._callable = executor
             return handle
 
         return decorator
@@ -167,6 +186,8 @@ class TaskDecoratorCollection:
         outputs: Optional[SocketSpec | list] = None,
         max_depth: int = 100,
         max_number_jobs: Optional[int] = None,
+        input_model: Optional[Type[BaseModel]] = None,
+        output_model: Optional[Type[BaseModel]] = None,
     ) -> Callable:
         """Generate a decorator that register a function as a graph task.
         Attributes:
@@ -174,23 +195,30 @@ class TaskDecoratorCollection:
             catalog (str): task catalog
             inputs (list): task inputs
             outputs (list): task outputs
+            input_model (BaseModel): model declaring the input sockets, checked at every
+                call and again when the graph is expanded
+            output_model (BaseModel): refused; a graph returns socket references, which
+                stand for values that do not exist yet
         """
 
         def decorator(func) -> TaskHandle:
             from aiida_workgraph.tasks.graph_task import _build_graph_task_taskspec
 
+            in_spec, _, executor = apply_models(
+                func, inputs, None, input_model, output_model, is_graph=True, api=SocketSpecAPI
+            )
             handle = TaskHandle(
                 _build_graph_task_taskspec(
                     func,
                     identifier=identifier,
                     catalog=catalog,
-                    in_spec=inputs,
+                    in_spec=in_spec,
                     out_spec=outputs,
                     max_depth=max_depth,
                     max_number_jobs=max_number_jobs,
                 )
             )
-            handle._callable = func
+            handle._callable = executor
             return handle
 
         return decorator

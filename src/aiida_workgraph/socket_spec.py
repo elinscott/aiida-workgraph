@@ -25,6 +25,7 @@ __all__ = [
     'validate_socket_data',
     'infer_specs_from_callable',
     'from_aiida_process',
+    'spec_from_model',
     'SocketSpecSelect',
     'select',
     'meta',
@@ -148,3 +149,14 @@ dynamic = SocketSpecAPI.dynamic
 validate_socket_data = SocketSpecAPI.validate_socket_data
 infer_specs_from_callable = SocketSpecAPI.infer_specs_from_callable
 from_aiida_process = SocketSpecAPI.from_aiida_process
+
+
+def spec_from_model(model: Any) -> SocketSpec:
+    """Return the socket namespace ``model`` describes, in this package's vocabulary.
+
+    ``node_graph.input_model.spec_from_model`` builds the same namespace out of
+    node-graph's socket identifiers; this binds it to aiida-workgraph's.
+    """
+    from node_graph.input_model import spec_from_model as _spec_from_model
+
+    return _spec_from_model(model, SocketSpecAPI)
