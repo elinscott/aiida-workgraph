@@ -1,6 +1,7 @@
 import pytest
-import node_graph
+from pydantic import ValidationError
 from aiida_workgraph import WorkGraph, task, spec
+from aiida_workgraph.workgraph import BOOKKEEPING_KEYS, ENGINE_LAUNCH_KEYS, WorkGraphMetadata
 from aiida import orm
 from aiida.calculations.arithmetic.add import ArithmeticAddCalculation
 from typing import Any
@@ -260,40 +261,83 @@ def test_wg_metadata_roundtrips_through_dict(decorated_add):
     assert wg2.name == 'test_wg_metadata_roundtrips_through_dict'
 
 
-def test_wg_metadata_bad_key_raises_on_attribute_assignment(wg_task):
-    """``wg.metadata['bad_key'] = ...`` raises immediately, naming the valid keys."""
-    wg = wg_task
-    with pytest.raises(ValueError, match="Unknown metadata key 'bad_key'"):
-        wg.metadata['bad_key'] = 1
-
-
 def test_wg_metadata_bad_key_raises_on_construction():
-    """A bad key in the constructor's ``metadata`` kwarg raises immediately, not just at launch."""
-    with pytest.raises(ValueError, match="Unknown metadata key.*'bad_key'"):
+    """A bad key in the constructor's ``metadata`` kwarg raises straight away."""
+    with pytest.raises(ValidationError, match='bad_key'):
         WorkGraph('test_wg_metadata_bad_key_raises_on_construction', metadata={'bad_key': 1})
+
+
+def test_wg_metadata_declared_key_wrong_type_raises(wg_task):
+    """A declared key holding the wrong type is refused too, not just an unknown name."""
+    with pytest.raises(ValidationError, match='label'):
+        WorkGraph('test_wg_metadata_declared_key_wrong_type_raises', metadata={'label': [1, 2, 3]})
+
+
+def test_wg_metadata_bad_key_not_refused_at_the_line(wg_task):
+    """``wg.metadata`` is a plain dict: a bad key sticks at the assignment and raises at ``to_dict()``.
+
+    This is the design, not an oversight — validation lives at the boundaries
+    (construction, load, serialization, launch), so nothing has to wrap the dict.
+    """
+    wg = wg_task
+    wg.metadata['bad_key'] = 1  # no complaint here
+    assert wg.metadata['bad_key'] == 1
+    with pytest.raises(ValidationError, match='bad_key'):
+        wg.to_dict()
+
+
+def test_wg_metadata_whole_dict_reassignment_checked_at_the_boundary(wg_task):
+    """Replacing ``wg.metadata`` wholesale behaves the same way: quiet at the line, refused at ``to_dict()``."""
+    wg = wg_task
+    wg.metadata = {'bad_key': 1}
+    assert wg.metadata == {'bad_key': 1}
+    with pytest.raises(ValidationError, match='bad_key'):
+        wg.to_dict()
+    wg.metadata = {'label': 'a valid replacement'}
+    assert wg.to_dict()['metadata']['label'] == 'a valid replacement'
+
+
+def test_wg_metadata_bad_key_refused_at_launch(wg_task):
+    """A bad key reaches ``run()``/``submit()`` through ``to_engine_inputs()``, and is refused there."""
+    wg = wg_task
+    wg.name = 'test_wg_metadata_bad_key_refused_at_launch'
+    wg.metadata['bad_key'] = 1
+    with pytest.raises(ValidationError, match='bad_key'):
+        wg.to_engine_inputs()
+    with pytest.raises(ValidationError, match='bad_key'):
+        wg.run()
+    assert wg.process is None
+
+
+def test_engine_launch_keys_come_from_the_engine_spec():
+    """The launch half of the schema is introspected from ``WorkGraphEngine``, not hand-listed.
+
+    If AiiDA's own metadata port grows or loses a name, the schema follows it.
+    """
+    from aiida_workgraph.engine.workgraph import WorkGraphEngine
+
+    assert ENGINE_LAUNCH_KEYS == frozenset(WorkGraphEngine.spec().inputs['metadata'].keys())
+    assert ENGINE_LAUNCH_KEYS <= frozenset(WorkGraphMetadata.__annotations__)
 
 
 def test_wg_metadata_declared_keys_disjoint_from_bookkeeping():
     """AiiDA's launch-metadata port names never collide with node-graph's bookkeeping keys.
 
-    This is the tripwire for the #812 collision: if node-graph or aiida-workgraph ever
-    declared a bookkeeping key with the same name as an AiiDA metadata port, `to_engine_inputs`
-    could no longer tell which family a key belongs to, and a bookkeeping value could leak into
-    the process launch inputs (or vice versa). Checked against the two *raw* sources
-    (node-graph's own keys plus this class's `pk`, vs. AiiDA's introspected launch keys) —
-    not `WorkGraph._declared_metadata_keys - WorkGraph._engine_metadata_keys`, which is
-    disjoint from `_engine_metadata_keys` by construction (set difference) and would pass
-    even if the two sources collided.
+    This is the tripwire for the #812 collision: were a bookkeeping key ever to
+    share a name with an AiiDA metadata port, ``to_engine_inputs`` could no
+    longer tell which family a key belongs to, and a bookkeeping value could
+    leak into the launch inputs. Checked against the two raw sources, so a
+    collision cannot hide behind a set difference.
     """
-    bookkeeping_keys = node_graph.Graph._declared_metadata_keys | {'pk'}
-    assert bookkeeping_keys.isdisjoint(WorkGraph._engine_metadata_keys)
+    assert BOOKKEEPING_KEYS.isdisjoint(ENGINE_LAUNCH_KEYS)
     # sanity: the bookkeeping side is non-empty and known, not an accidental empty set
-    assert bookkeeping_keys == {'graph_class', 'definition', 'pk'}
+    assert BOOKKEEPING_KEYS == {'graph_class', 'definition', 'pk'}
+    assert BOOKKEEPING_KEYS <= frozenset(WorkGraphMetadata.__annotations__)
 
 
 def test_wg_metadata_task_graph_build_definition_key_not_rejected():
     """A nested ``@task.graph`` build writes node-graph's own ``definition`` bookkeeping key
-    into the built graph's metadata (via ``graph._metadata.setdefault('definition', ...)``,
+    into the built graph's metadata (via ``graph.metadata.setdefault('definition', ...)``,
     node_graph/utils/graph.py). That write must not be rejected by `WorkGraph`'s validating
     metadata just because the key isn't an AiiDA launch key — it's declared bookkeeping too.
     """
@@ -328,16 +372,18 @@ def test_wg_metadata_legacy_wgdata_loads(decorated_add):
 def test_wg_metadata_unrecognized_legacy_key_raises_on_load(decorated_add):
     """A ``wgdata`` carrying a metadata key this schema has never declared — e.g.
     ``platform``/``worker_name``, written by an earlier aiida-workgraph version and
-    by no current code — raises on load, naming the key, exactly as it would on
-    fresh construction. Validation is enforced uniformly: a graph serialized with
-    stray metadata keys must have them removed before it loads again.
+    by no current code — raises on load, naming the key and the graph, exactly as it
+    would on fresh construction. A graph serialized with stray metadata keys must
+    have them removed before it loads again.
     """
     wg = WorkGraph('test_wg_metadata_unrecognized_legacy_key_raises_on_load')
     wg.add_task(decorated_add, x=2, y=3)
     wgdata = wg.to_dict()
     wgdata['metadata']['worker_name'] = 'localhost'
-    with pytest.raises(ValueError, match="Unknown metadata key\\(s\\) \\['worker_name'\\]"):
+    with pytest.raises(ValueError) as excinfo:
         WorkGraph.from_dict(wgdata)
+    assert "Cannot load graph 'test_wg_metadata_unrecognized_legacy_key_raises_on_load'" in str(excinfo.value)
+    assert 'worker_name' in str(excinfo.value)
 
 
 def test_wg_metadata_unset_graph_serializes_like_before(decorated_add):
@@ -349,92 +395,6 @@ def test_wg_metadata_unset_graph_serializes_like_before(decorated_add):
         'graph_class': {'callable_name': 'WorkGraph', 'module_path': 'aiida_workgraph.workgraph'},
         'pk': None,
     }
-
-
-@pytest.mark.parametrize(
-    'mutate',
-    [
-        lambda md: md.update({'bogus': 1}),
-        lambda md: md.update(bogus=1),
-        lambda md: md.update([('bogus', 1)]),
-        lambda md: md.setdefault('bogus', 1),
-        lambda md: md.__setitem__('bogus', 1),
-        lambda md: md.__ior__({'bogus': 1}),
-    ],
-    ids=['update_dict', 'update_kwargs', 'update_pairs', 'setdefault', 'setitem', 'ior'],
-)
-def test_wg_metadata_all_mutation_paths_reject_bad_key(wg_task, mutate):
-    """Every mutation path on ``wg.metadata`` — ``update()`` in its three calling
-    conventions, ``setdefault()``, plain assignment, and ``|=`` — rejects an
-    undeclared key, and none of them leave it behind."""
-    wg = wg_task
-    with pytest.raises(ValueError, match='Unknown metadata key'):
-        mutate(wg.metadata)
-    assert 'bogus' not in wg.metadata
-
-
-def test_wg_metadata_ior_bad_key_does_not_mutate(wg_task):
-    """``wg.metadata |= {'good': ..., 'bad_key': ...}`` rejects without applying
-    even the declared key in the same dict: the whole union either lands or none
-    of it does."""
-    wg = wg_task
-    with pytest.raises(ValueError, match='Unknown metadata key'):
-        wg.metadata |= {'label': 'should not stick', 'bad_key': 1}
-    assert 'label' not in wg.metadata
-    assert 'bad_key' not in wg.metadata
-
-
-def test_wg_metadata_or_valid_key_returns_working_dict(wg_task):
-    """``wg.metadata | {...}`` with a declared key returns a new, still-validating
-    ``MetadataDict`` — not a hole opened by ``UserDict.__or__`` dropping
-    ``declared_keys`` on the reconstructed instance."""
-    wg = wg_task
-    merged = wg.metadata | {'description': 'also valid'}
-    assert merged['description'] == 'also valid'
-    assert type(merged).__name__ == 'MetadataDict'
-    with pytest.raises(ValueError, match='Unknown metadata key'):
-        merged['bad_key'] = 1
-    # the original is untouched
-    assert 'description' not in wg.metadata
-
-
-def test_wg_metadata_or_bad_key_rejects(wg_task):
-    """``wg.metadata | {...}`` with an undeclared key raises rather than silently
-    building a graph-level metadata dict full of unread keys."""
-    wg = wg_task
-    with pytest.raises(ValueError, match='Unknown metadata key'):
-        wg.metadata | {'bad_key': 1}
-
-
-def test_wg_metadata_reflected_or_both_directions(wg_task):
-    """Reflected union (``{...} | wg.metadata``) behaves the same as ``wg.metadata | {...}``:
-    a declared key merges into a working dict, an undeclared key raises."""
-    wg = wg_task
-    merged = {'description': 'also valid'} | wg.metadata
-    assert merged['description'] == 'also valid'
-    with pytest.raises(ValueError, match='Unknown metadata key'):
-        {'bad_key': 1} | wg.metadata
-
-
-def test_declared_metadata_keys_populated_before_any_instance(tmp_path):
-    """`_engine_metadata_keys`/`_declared_metadata_keys` are populated when this module
-    is imported, not lazily on the first `WorkGraph()` call — so a subclass that unions
-    into `_declared_metadata_keys` in its own class body sees the full set even if no
-    `WorkGraph` has ever been constructed in that process."""
-    import subprocess
-    import sys
-
-    script = tmp_path / 'probe.py'
-    script.write_text(
-        'from aiida_workgraph import WorkGraph\n'
-        'class Sub(WorkGraph):\n'
-        "    _declared_metadata_keys = WorkGraph._declared_metadata_keys | {'my_key'}\n"
-        "assert 'label' in Sub._declared_metadata_keys, Sub._declared_metadata_keys\n"
-        "assert 'my_key' in Sub._declared_metadata_keys\n"
-        "print('OK')\n"
-    )
-    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_load_failure(create_process_node):
