@@ -1,4 +1,5 @@
 import pytest
+import node_graph
 from aiida_workgraph import WorkGraph, task, spec
 from aiida import orm
 from aiida.calculations.arithmetic.add import ArithmeticAddCalculation
@@ -278,9 +279,13 @@ def test_wg_metadata_declared_keys_disjoint_from_bookkeeping():
     This is the tripwire for the #812 collision: if node-graph or aiida-workgraph ever
     declared a bookkeeping key with the same name as an AiiDA metadata port, `to_engine_inputs`
     could no longer tell which family a key belongs to, and a bookkeeping value could leak into
-    the process launch inputs (or vice versa). This must fail at definition time, not silently.
+    the process launch inputs (or vice versa). Checked against the two *raw* sources
+    (node-graph's own keys plus this class's `pk`, vs. AiiDA's introspected launch keys) —
+    not `WorkGraph._declared_metadata_keys - WorkGraph._engine_metadata_keys`, which is
+    disjoint from `_engine_metadata_keys` by construction (set difference) and would pass
+    even if the two sources collided.
     """
-    bookkeeping_keys = WorkGraph._declared_metadata_keys - WorkGraph._engine_metadata_keys
+    bookkeeping_keys = node_graph.Graph._declared_metadata_keys | {'pk'}
     assert bookkeeping_keys.isdisjoint(WorkGraph._engine_metadata_keys)
     # sanity: the bookkeeping side is non-empty and known, not an accidental empty set
     assert bookkeeping_keys == {'graph_type', 'graph_class', 'definition', 'pk'}
