@@ -288,7 +288,7 @@ def test_wg_metadata_declared_keys_disjoint_from_bookkeeping():
     bookkeeping_keys = node_graph.Graph._declared_metadata_keys | {'pk'}
     assert bookkeeping_keys.isdisjoint(WorkGraph._engine_metadata_keys)
     # sanity: the bookkeeping side is non-empty and known, not an accidental empty set
-    assert bookkeeping_keys == {'graph_type', 'graph_class', 'definition', 'pk'}
+    assert bookkeeping_keys == {'graph_class', 'definition', 'pk'}
 
 
 def test_wg_metadata_task_graph_build_definition_key_not_rejected():
@@ -319,7 +319,7 @@ def test_wg_metadata_legacy_wgdata_loads(decorated_add):
     wg = WorkGraph('test_wg_metadata_legacy_wgdata_loads')
     wg.add_task(decorated_add, x=2, y=3)
     wgdata = wg.to_dict()
-    assert set(wgdata['metadata']) <= {'graph_type', 'graph_class', 'pk'}
+    assert set(wgdata['metadata']) <= {'graph_class', 'pk'}
     wg2 = WorkGraph.from_dict(wgdata)
     assert 'label' not in wg2.metadata
     assert wg2.name == 'test_wg_metadata_legacy_wgdata_loads'
@@ -346,7 +346,6 @@ def test_wg_metadata_unset_graph_serializes_like_before(decorated_add):
     wg.add_task(decorated_add, x=2, y=3)
     wgdata = wg.to_dict()
     assert wgdata['metadata'] == {
-        'graph_type': 'NORMAL',
         'graph_class': {'callable_name': 'WorkGraph', 'module_path': 'aiida_workgraph.workgraph'},
         'pk': None,
     }
@@ -369,7 +368,7 @@ def test_wg_metadata_all_mutation_paths_reject_bad_key(wg_task, mutate):
     conventions, ``setdefault()``, plain assignment, and ``|=`` — rejects an
     undeclared key, and none of them leave it behind."""
     wg = wg_task
-    with pytest.raises(ValueError, match="Unknown metadata key"):
+    with pytest.raises(ValueError, match='Unknown metadata key'):
         mutate(wg.metadata)
     assert 'bogus' not in wg.metadata
 
@@ -379,7 +378,7 @@ def test_wg_metadata_ior_bad_key_does_not_mutate(wg_task):
     even the declared key in the same dict: the whole union either lands or none
     of it does."""
     wg = wg_task
-    with pytest.raises(ValueError, match="Unknown metadata key"):
+    with pytest.raises(ValueError, match='Unknown metadata key'):
         wg.metadata |= {'label': 'should not stick', 'bad_key': 1}
     assert 'label' not in wg.metadata
     assert 'bad_key' not in wg.metadata
@@ -393,7 +392,7 @@ def test_wg_metadata_or_valid_key_returns_working_dict(wg_task):
     merged = wg.metadata | {'description': 'also valid'}
     assert merged['description'] == 'also valid'
     assert type(merged).__name__ == 'MetadataDict'
-    with pytest.raises(ValueError, match="Unknown metadata key"):
+    with pytest.raises(ValueError, match='Unknown metadata key'):
         merged['bad_key'] = 1
     # the original is untouched
     assert 'description' not in wg.metadata
@@ -403,7 +402,7 @@ def test_wg_metadata_or_bad_key_rejects(wg_task):
     """``wg.metadata | {...}`` with an undeclared key raises rather than silently
     building a graph-level metadata dict full of unread keys."""
     wg = wg_task
-    with pytest.raises(ValueError, match="Unknown metadata key"):
+    with pytest.raises(ValueError, match='Unknown metadata key'):
         wg.metadata | {'bad_key': 1}
 
 
@@ -413,7 +412,7 @@ def test_wg_metadata_reflected_or_both_directions(wg_task):
     wg = wg_task
     merged = {'description': 'also valid'} | wg.metadata
     assert merged['description'] == 'also valid'
-    with pytest.raises(ValueError, match="Unknown metadata key"):
+    with pytest.raises(ValueError, match='Unknown metadata key'):
         {'bad_key': 1} | wg.metadata
 
 

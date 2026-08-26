@@ -101,7 +101,7 @@ class WorkGraph(node_graph.Graph):
 
     # `metadata` keys, side by side: AiiDA's own process-launch metadata port names
     # (`label`, `description`, ...) union node-graph's serialization bookkeeping
-    # keys (`graph_type`, `graph_class`) union this class's own `pk`. Populated once,
+    # keys (`graph_class`, `definition`) union this class's own `pk`. Populated once,
     # eagerly, at the end of this module — see `_ensure_declared_metadata_keys`.
     _engine_metadata_keys: frozenset = frozenset()
     _declared_metadata_keys: frozenset = frozenset()
@@ -178,7 +178,7 @@ class WorkGraph(node_graph.Graph):
         AiiDA launch keys (`label`, `description`, `call_link_label`,
         `disable_cache`, `store_provenance`) are forwarded to `run()`/`submit()`,
         an explicit launch-time `metadata` argument winning key-by-key. Bookkeeping
-        keys (`graph_type`, `graph_class`, `pk`) are node-graph's and this class's
+        keys (`graph_class`, `definition`, `pk`) are node-graph's and this class's
         own serialization state. Both round-trip together through the existing
         `wgdata['metadata']` slot. A key outside `_declared_metadata_keys` raises
         `ValueError` immediately, whether set here or passed to the constructor.
