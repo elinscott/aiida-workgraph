@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 from aiida import orm
-from node_graph.input_model import BODY_RECEIVES, ModelContractError
+from node_graph.input_model import BODY_RECEIVES, ModelContractError, TaskInputValidationError
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -245,9 +245,19 @@ def test_a_cross_field_rule_fails_the_process_naming_the_task():
     assert 'low must be below high' in node.process.exit_message
 
 
-def test_a_field_constraint_fails_the_process():
-    """``le=100`` is a model rule, not a socket type, so the build accepts 500."""
+def test_a_field_constraint_fails_where_it_is_written():
+    """``le=100`` is a model rule the socket layer cannot see, and ``add_task`` still refuses 500."""
     wg = WorkGraph('span_too_high')
+    with pytest.raises(TaskInputValidationError, match='less than or equal to 100'):
+        wg.add_task(span, name='span', low=1, high=500)
+
+
+def test_without_checkpoint_a_that_constraint_reaches_the_run_edge(monkeypatch):
+    """The control: with the write unchecked, ``le=100`` is first seen where the body runs."""
+    from node_graph import input_model
+
+    monkeypatch.setattr(input_model, 'validate_task_inputs', lambda task, inputs: None)
+    wg = WorkGraph('span_too_high_unchecked')
     node = wg.add_task(span, name='span', low=1, high=500)
     wg.run()
     assert node.process.exit_status == FUNCTION_FAILED
