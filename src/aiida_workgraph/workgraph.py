@@ -108,8 +108,8 @@ class WorkGraph(node_graph.Graph):
         Args:
             name (str, optional): The name of the WorkGraph. Defaults to 'WorkGraph'.
             **kwargs: Additional keyword arguments to be passed to the WorkGraph class.
-                A `metadata` kwarg here is the unified metadata dict — see
-                `WorkGraph.metadata`.
+                A `metadata` kwarg here is validated against `WorkGraphMetadata`,
+                which names everything it may hold.
         """
         from aiida_workgraph.serialization import AiidaSerializationAdapter
 
