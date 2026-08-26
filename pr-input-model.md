@@ -31,14 +31,17 @@ This is the aiida-workgraph half of `input_model=`/`output_model=`. The contract
 
 **A graph task's contract is held where this engine expands it.** node-graph's checkpoint sits in `materialize_graph`, which `GraphTask.execute` calls, so a `@task.graph(input_model=M)` inside a submitted process is checked against `M` at the moment its inputs are known — including a subgraph whose bound an upstream task produced, which no earlier moment could have seen.
 
+**A graph body is handed storage nodes, and a model declaring `str` refuses an `orm.Str`.** The adapter answers node-graph's new `to_python` with what each node holds, rendering through `aiida-pythonjob`'s deserializers and leaving a node no deserializer can render as it is — so a contract naming an AiiDA type still sees one. Without this every graph `input_model` with a `str` field fails at expansion.
+
 **Nothing changes for a task without a model.** The decorators take the same path, the spec is the same spec, and the serializer takes the branch it took before.
 
 ## Testing
 
-`tests/test_input_model.py`, 31 tests, all against a live profile — this file asserts only what needs the engine; the contract's own tests are node-graph's.
+`tests/test_input_model.py`, 33 tests, all against a live profile — this file asserts only what needs the engine; the contract's own tests are node-graph's.
 
 - **Storage claims are paired with a control task** that has the same sockets and no model, so the model is visibly what did the work: the enum control's body reports `str` where the modelled body reports `Color`, and the `Decimal` control cannot be stored at all.
 - **The deep-leaf walk is parameterized** over a nested model, a mapping of models, and a mapping of models with a model inside; each asserts both the stored string and the type the body received, which is what distinguishes "the model rendered it" from "something upstream happened to cope".
 - **Rules that reach the run edge are read off the process**, not off an exception: exit status 323 with a message naming the task and the model, so the failure is one a user would actually see in `verdi process report`.
 - **The graph contract is tested in two shapes**: a bad graph fails before it becomes a process at all (`node.process is None`, task `FAILED`, parent non-zero), and a subgraph whose bound comes from an upstream task fails once that task has run.
-- **Full suite: 21 failed, 236 passed, 6 skipped.** The same 21 failures, by name, on the base commit with the same node-graph checkout (205 passed there; the 31 extra passes are this file). Nineteen are `AttributeError: 'TaskHandle' object has no attribute 'build'` — this package's `TaskHandle` against node-graph's `GraphTaskHandle` split — and are the known pairing noise, untouched by this branch.
+- **The wrapper reading has its own control**: with `to_python` monkeypatched back to the identity, the same graph fails at expansion and never becomes a process.
+- **Full suite: 21 failed, 238 passed, 6 skipped.** The same 21 failures, by name, on the base commit with the same node-graph checkout (205 passed there; the 33 extra passes are this file). Nineteen are `AttributeError: 'TaskHandle' object has no attribute 'build'` — this package's `TaskHandle` against node-graph's `GraphTaskHandle` split — and are the known pairing noise, untouched by this branch.

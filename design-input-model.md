@@ -12,6 +12,7 @@ The feature belongs to node-graph, which owns sockets, specs and graph expansion
 | The spec a model describes, the contract check, all three checkpoints | node-graph `input_model.py` |
 | The socket vocabulary a spec is built in | each package's `SocketSpecAPI`, passed to `spec_from_model` |
 | Storage: rendering a socket's value through the model that declares it | aiida-workgraph `serialization.py`, calling node-graph's `model_dumper_for_socket` |
+| Reading the Python behind a storage node, for the graph checkpoint | aiida-workgraph `serialization.py`'s `to_python` |
 
 ## Definition time
 
@@ -51,6 +52,8 @@ Hook: `materialize_graph`, after `coerce_inputs_from_spec` and `_deserialize_inp
 A `@task.graph`'s inputs are values by the time its body runs, so the **real** model runs here, cross-field rules and all. An untagged *copy* is validated (`untagged_copy`, not the in-place `resolve_tagged_values`) and discarded; the body receives the original tagged values, because it turns those tags into links and a fresh object carries none.
 
 All three expansion paths funnel through `materialize_graph` — `GraphTaskHandle.build`, `BaseEngine._build_subgraph`, and aiida-workgraph's `GraphTask.execute` — so one hook covers a graph built in a session, a subgraph built by the local engine, and a graph task expanded inside a submitted process. A nested graph fed a value another task produced is checked at its own boundary, which is the first moment that value exists.
+
+A graph body is handed whatever the engine wraps its values in — under AiiDA, storage nodes — because that is what it needs to draw links. A model declaring `str` cannot be asked to accept an `orm.Str`, so the checkpoint asks the graph's serialization adapter for the plain Python behind each value first (`SerializationAdapter.to_python`, the identity for an adapter that wraps nothing; aiida-workgraph's renders each node through `aiida-pythonjob`'s deserializers and leaves a node no deserializer can render as it is).
 
 `output_model=` is refused on `@task.graph`: a graph body returns socket references, so there is nothing to validate against the model.
 

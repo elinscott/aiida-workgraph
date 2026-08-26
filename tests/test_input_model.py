@@ -303,6 +303,43 @@ def test_a_graph_contract_fails_the_submitted_graph():
     assert wg.process.exit_status != 0
 
 
+class Named(BaseModel):
+    """A `str` field, which is what the engine's own wrappers get in the way of."""
+
+    label: str
+    count: int
+
+
+@task()
+def echo(label, count):
+    return f'{label}-{count}'
+
+
+@task.graph(input_model=Named)
+def named(label, count):
+    return echo(label=label, count=count)
+
+
+def test_a_graph_contract_reads_through_the_engines_wrappers():
+    """A graph body is handed storage nodes; the contract is checked against what they hold."""
+    wg = WorkGraph('named_ok')
+    node = wg.add_task(named, name='named', label='silicon', count=2)
+    wg.run()
+    assert node.process.exit_status == 0
+
+
+def test_without_that_reading_every_str_field_would_be_refused(monkeypatch):
+    """The control: an adapter that hands the nodes on refuses `orm.Str` for a `str` field."""
+    from aiida_workgraph.serialization import AiidaSerializationAdapter
+
+    monkeypatch.setattr(AiidaSerializationAdapter, 'to_python', lambda self, value: value)
+    wg = WorkGraph('named_unread')
+    node = wg.add_task(named, name='named', label='silicon', count=2)
+    wg.run()
+    assert node.process is None
+    assert node.state == 'FAILED'
+
+
 def test_a_runtime_value_is_checked_at_the_graph_it_reaches():
     """Nothing knows ``upper`` is 5 until ``shrink`` has run, so this is the first chance."""
     wg = WorkGraph('window_computed')
