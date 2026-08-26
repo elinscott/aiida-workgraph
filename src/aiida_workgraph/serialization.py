@@ -77,15 +77,22 @@ def _to_declared_python(value: Any) -> Any:
 
     ``orm.BaseType``, ``orm.Dict`` and ``orm.List`` are the nodes the write
     path creates for plain Python; every other ``orm.Data`` is a value in its
-    own right and is returned as it is. A tagged value keeps its tag, so a
-    graph body still draws a link from it.
+    own right and is returned as it is.
+
+    A tagged value is retagged whether or not anything came off it, and keeps
+    its uuid: the tag is what a graph body turns into a link, and the uuid is
+    what makes the body's value and the graph's input one value rather than
+    two. Handing back the wrapped value on the branch where nothing needed
+    unwrapping would drop the tag on exactly the plain fields most bodies
+    take.
     """
     from aiida import orm
     from node_graph.socket import TaggedValue
 
     if isinstance(value, TaggedValue):
-        plain = _to_declared_python(value.__wrapped__)
-        return plain if plain is value.__wrapped__ else TaggedValue(plain, socket=value._socket)
+        tagged = TaggedValue(_to_declared_python(value.__wrapped__), socket=value._socket)
+        tagged._self_uuid = value._uuid
+        return tagged
     if isinstance(value, orm.BaseType):
         return value.value
     if isinstance(value, orm.Dict):

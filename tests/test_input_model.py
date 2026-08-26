@@ -461,14 +461,85 @@ def test_the_socket_identifier_alone_cannot_tell_int_from_orm_int():
     assert spec.fields['node'].meta.extras[BODY_RECEIVES] == 'node'
 
 
+def _naive_unwrap(value):
+    """Unwrap the way an identifier-keyed read edge does, handing the tag back to no one."""
+    from node_graph.socket import TaggedValue
+
+    plain = value.__wrapped__ if isinstance(value, TaggedValue) else value
+    if isinstance(plain, orm.BaseType):
+        return plain.value
+    if isinstance(plain, orm.Dict):
+        return plain.get_dict()
+    if isinstance(plain, orm.List):
+        return plain.get_list()
+    return plain
+
+
+def _label_nodes(node):
+    """Return the node written into the graph's ``label`` and the one its subtask got."""
+    outer = inner = None
+    for link in node.process.base.links.get_incoming().all():
+        if link.link_label.endswith('label'):
+            outer = link.node
+    for child in node.process.called:
+        for link in child.base.links.get_incoming().all():
+            if link.link_label.endswith('label'):
+                inner = link.node
+    return outer, inner
+
+
 def test_an_unwrapped_value_keeps_the_tag_that_draws_its_link():
-    """The body forwards a `str` field, and the child must be linked to it, not given a copy."""
+    """The body forwards a `str` field, and the child must be linked to it, not given a copy.
+
+    Provenance is what says which: the node the subtask reads has to be the
+    very node the graph was given, not a second one holding the same string.
+    """
     wg = WorkGraph('linked')
     node = wg.add_task(named, name='named', label='silicon', count=2)
     wg.run()
-    graph = node.process.called[0] if node.process.called else None
     assert node.process.exit_status == 0
-    assert graph is not None
+    outer, inner = _label_nodes(node)
+    assert outer is not None and inner is not None
+    assert outer.uuid == inner.uuid
+
+
+def test_without_the_tag_the_subtask_reads_a_node_nobody_produced(monkeypatch):
+    """The control: unwrap without retagging and the body holds a copy, not a reference."""
+    import aiida_workgraph.serialization as serialization
+
+    monkeypatch.setattr(serialization, '_to_declared_python', _naive_unwrap)
+    wg = WorkGraph('linked_naive')
+    node = wg.add_task(named, name='named', label='silicon', count=2)
+    wg.run()
+    outer, inner = _label_nodes(node)
+    assert outer is not None and inner is not None
+    assert outer.uuid != inner.uuid
+    assert len(inner.base.links.get_incoming().all()) == 0
+
+
+def test_a_value_that_needed_no_unwrapping_keeps_its_tag_too():
+    """A plain `str` has no node to take off, and dropping the tag there drops the link."""
+    from node_graph.socket import TaggedValue
+
+    from aiida_workgraph.serialization import _to_declared_python
+
+    tagged = TaggedValue('silicon', socket=object())
+    unwrapped = _to_declared_python(tagged)
+    assert isinstance(unwrapped, TaggedValue)
+    assert unwrapped._socket is tagged._socket
+    assert unwrapped._uuid == tagged._uuid
+
+
+def test_a_value_that_was_unwrapped_keeps_the_uuid_it_arrived_with():
+    """One value, one uuid: a new one would make the body's value a second value."""
+    from node_graph.socket import TaggedValue
+
+    from aiida_workgraph.serialization import _to_declared_python
+
+    tagged = TaggedValue(orm.Int(7), socket=object())
+    unwrapped = _to_declared_python(tagged)
+    assert unwrapped == 7
+    assert unwrapped._uuid == tagged._uuid
 
 
 def test_a_runtime_value_is_checked_at_the_graph_it_reaches():
