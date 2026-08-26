@@ -81,11 +81,21 @@ class AiidaSerializationAdapter(SerializationAdapter):
         self.user = user
 
     def serialize(self, value: Any, socket: Any, *, store: bool) -> Any:
+        from node_graph.input_model import model_dumper_for_socket
+
         if socket is None:
             return value
         spec = socket._to_spec()
         resolve_tagged_values(value)
-        value = _flatten_enums(value)
+        dump = model_dumper_for_socket(socket)
+        if dump is not None:
+            # The task's input model owns this socket's wire form: the model's
+            # own serialization renders the value, so a field type JSON cannot
+            # hold reaches the database through the field_serializer that
+            # declares its form.
+            value = dump(value)
+        else:
+            value = _flatten_enums(value)
         return serialize_ports(
             python_data=value,
             port_schema=spec,
