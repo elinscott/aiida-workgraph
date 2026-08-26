@@ -414,6 +414,29 @@ def test_wg_metadata_reflected_or_both_directions(wg_task):
     assert merged['description'] == 'also valid'
     with pytest.raises(ValueError, match="Unknown metadata key"):
         {'bad_key': 1} | wg.metadata
+
+
+def test_declared_metadata_keys_populated_before_any_instance(tmp_path):
+    """`_engine_metadata_keys`/`_declared_metadata_keys` are populated when this module
+    is imported, not lazily on the first `WorkGraph()` call — so a subclass that unions
+    into `_declared_metadata_keys` in its own class body sees the full set even if no
+    `WorkGraph` has ever been constructed in that process."""
+    import subprocess
+    import sys
+
+    script = tmp_path / 'probe.py'
+    script.write_text(
+        'from aiida_workgraph import WorkGraph\n'
+        'class Sub(WorkGraph):\n'
+        "    _declared_metadata_keys = WorkGraph._declared_metadata_keys | {'my_key'}\n"
+        "assert 'label' in Sub._declared_metadata_keys, Sub._declared_metadata_keys\n"
+        "assert 'my_key' in Sub._declared_metadata_keys\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_load_failure(create_process_node):
     node = create_process_node()
     with pytest.raises(ValueError, match=f'Process {node.pk} is not a WorkGraph'):

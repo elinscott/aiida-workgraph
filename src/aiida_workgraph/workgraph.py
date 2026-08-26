@@ -100,20 +100,24 @@ class WorkGraph(node_graph.Graph):
     # `metadata` keys, side by side: AiiDA's own process-launch metadata port names
     # (`label`, `description`, ...) union node-graph's serialization bookkeeping
     # keys (`graph_type`, `graph_class`) union this class's own `pk`. Populated once,
-    # lazily, by `_ensure_declared_metadata_keys` — see there for why not eagerly.
+    # eagerly, at the end of this module — see `_ensure_declared_metadata_keys`.
     _engine_metadata_keys: frozenset = frozenset()
     _declared_metadata_keys: frozenset = frozenset()
     _validate_metadata_keys = True
 
     @classmethod
     def _ensure_declared_metadata_keys(cls) -> None:
-        """Populate `_engine_metadata_keys`/`_declared_metadata_keys`, once, on first use.
+        """Populate `_engine_metadata_keys`/`_declared_metadata_keys`, once.
 
-        Deferred rather than computed at class-body time: it imports
-        `WorkGraphEngine` and builds its AiiDA process spec, both too heavy —
-        and too coupled to a configured AiiDA environment — to pay at package
-        import time. `_engine_metadata_keys` itself, not a hand-picked list, is
-        the source of truth for which keys AiiDA's launch path understands.
+        Called at the end of this module, right after the class body — not
+        lazily on first instantiation: a subclass elsewhere that extends
+        `_declared_metadata_keys = WorkGraph._declared_metadata_keys | {...}`
+        in its own class body must see the full set already, regardless of
+        whether any `WorkGraph` has been constructed yet — and any such
+        subclass necessarily imports this module first, so this module-level
+        call always runs before that subclass's class body does.
+        `_engine_metadata_keys` itself, not a hand-picked list, is the source
+        of truth for which keys AiiDA's launch path understands.
         """
         if WorkGraph._engine_metadata_keys:
             return
@@ -772,3 +776,8 @@ class WorkGraph(node_graph.Graph):
         inputs = inputs or {}
         task.set_inputs(inputs)
         return task.outputs
+
+
+# Populate WorkGraph's declared-metadata registry now, not on first instantiation:
+# see `_ensure_declared_metadata_keys`'s docstring for why this must run here.
+WorkGraph._ensure_declared_metadata_keys()
