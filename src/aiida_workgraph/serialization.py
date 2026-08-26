@@ -103,6 +103,28 @@ class AiidaSerializationAdapter(SerializationAdapter):
             user=self.user,
         )
 
+    def to_python(self, value: Any) -> Any:
+        """Return ``value`` with each AiiDA node replaced by the data it holds.
+
+        A ``@task.graph`` body is handed storage nodes, which is what it needs
+        to draw links and not what a contract can be checked against: a model
+        declaring ``str`` refuses an ``orm.Str``. A node no deserializer can
+        render is left as it is, so a contract naming that type still sees it.
+        """
+        from aiida import orm
+        from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
+
+        if isinstance(value, orm.Data):
+            try:
+                return deserialize_to_raw_python_data(value)
+            except ValueError:
+                return value
+        if isinstance(value, dict):
+            return {key: self.to_python(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return type(value)(self.to_python(item) for item in value)
+        return value
+
     def serialize_ports(self, python_data: Any, port_schema: Any, *, store: bool) -> Any:
         resolve_tagged_values(python_data)
         python_data = _flatten_enums(python_data)
