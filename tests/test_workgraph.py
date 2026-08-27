@@ -260,82 +260,70 @@ def test_wg_metadata_roundtrips_through_dict(decorated_add):
     assert wg2.name == 'test_wg_metadata_roundtrips_through_dict'
 
 
-def test_wg_metadata_bad_key_raises_on_construction():
-    """A bad key in the constructor's ``metadata`` kwarg raises straight away."""
-    with pytest.raises(ValueError, match='bad_key'):
-        WorkGraph('test_wg_metadata_bad_key_raises_on_construction', metadata={'bad_key': 1})
+@pytest.mark.parametrize(
+    'metadata, offender',
+    [
+        ({'bad_key': 1}, 'bad_key'),  # a key outside the schema
+        ({'label': [1, 2, 3]}, 'label'),  # a declared key holding the wrong type
+    ],
+)
+def test_wg_metadata_refused_on_construction(metadata, offender):
+    """The constructor's ``metadata`` kwarg is validated straight away, naming the offender."""
+    with pytest.raises(ValueError, match=offender):
+        WorkGraph('test_wg_metadata_refused_on_construction', metadata=metadata)
 
 
-def test_wg_metadata_declared_key_wrong_type_raises(wg_task):
-    """A declared key holding the wrong type is refused too, not just an unknown name."""
-    with pytest.raises(ValueError, match='label'):
-        WorkGraph('test_wg_metadata_declared_key_wrong_type_raises', metadata={'label': [1, 2, 3]})
+@pytest.mark.parametrize(
+    'field, bad_value',
+    [
+        ('store_provenance', 'no'),  # bool: lax mode would coerce each of these
+        ('store_provenance', 0),
+        ('store_provenance', 'yes'),
+        ('pk', '12'),  # Optional[int]: a numeral spelled as a string
+        ('label', 1),  # str: an int lax mode would stringify
+    ],
+)
+def test_wg_metadata_strict_mode_refuses(field, bad_value):
+    """Strict mode refuses values lax mode would have coerced into the field's type."""
+    with pytest.raises(ValueError, match=field):
+        WorkGraph.validate_metadata({field: bad_value})
 
 
-@pytest.mark.parametrize('bad_value', ['no', 0, 'yes'])
-def test_wg_metadata_strict_mode_refuses_coercible_bool(bad_value):
-    """``store_provenance`` is a ``bool`` field; strict mode refuses values lax mode would coerce."""
-    with pytest.raises(ValueError, match='store_provenance'):
-        WorkGraph.validate_metadata({'store_provenance': bad_value})
+@pytest.mark.parametrize('field, value', [('store_provenance', True), ('store_provenance', False), ('pk', 12)])
+def test_wg_metadata_strict_mode_accepts(field, value):
+    """A value of the field's own type still passes under strict mode, unchanged."""
+    assert WorkGraph.validate_metadata({field: value})[field] == value
 
 
-@pytest.mark.parametrize('good_value', [True, False])
-def test_wg_metadata_strict_mode_accepts_bool(good_value):
-    """An actual ``bool`` for ``store_provenance`` still passes under strict mode."""
-    assert WorkGraph.validate_metadata({'store_provenance': good_value})['store_provenance'] is good_value
+@pytest.fixture(params=['item', 'reassign'])
+def wg_with_bad_key(request, wg_task):
+    """``wg_task`` carrying a key outside the schema, set by item assignment or by replacing the dict."""
+    wg = wg_task
+    wg.name = request.node.name
+    if request.param == 'item':
+        wg.metadata['bad_key'] = 1
+    else:
+        wg.metadata = {'bad_key': 1}
+    return wg
 
 
-def test_wg_metadata_strict_mode_refuses_numeric_string_pk():
-    """``pk`` is an ``Optional[int]``; strict mode refuses a numeral spelled as a string."""
-    with pytest.raises(ValueError, match='pk'):
-        WorkGraph.validate_metadata({'pk': '12'})
+def test_wg_metadata_bad_key_refused_at_the_boundaries_not_the_line(wg_with_bad_key):
+    """``wg.metadata`` is a plain dict: a bad key sticks at the line and is refused at every boundary.
 
-
-def test_wg_metadata_strict_mode_accepts_int_pk():
-    """An actual ``int`` for ``pk`` still passes under strict mode."""
-    assert WorkGraph.validate_metadata({'pk': 12})['pk'] == 12
-
-
-def test_wg_metadata_strict_mode_refuses_int_label():
-    """``label`` is a ``str`` field; strict mode refuses an ``int`` lax mode would stringify."""
-    with pytest.raises(ValueError, match='label'):
-        WorkGraph.validate_metadata({'label': 1})
-
-
-def test_wg_metadata_bad_key_not_refused_at_the_line(wg_task):
-    """``wg.metadata`` is a plain dict: a bad key sticks at the assignment and raises at ``to_dict()``.
-
-    This is the design, not an oversight — validation lives at the boundaries
-    (construction, load, serialization, launch), so nothing has to wrap the dict.
+    This is the design, not an oversight — validation lives at construction, load,
+    serialization and launch, so nothing has to wrap the dict.
     """
-    wg = wg_task
-    wg.metadata['bad_key'] = 1  # no complaint here
-    assert wg.metadata['bad_key'] == 1
+    wg = wg_with_bad_key
+    assert wg.metadata['bad_key'] == 1  # no complaint at the assignment
     with pytest.raises(ValueError, match='bad_key'):
         wg.to_dict()
-
-
-def test_wg_metadata_whole_dict_reassignment_checked_at_the_boundary(wg_task):
-    """Replacing ``wg.metadata`` wholesale behaves the same way: quiet at the line, refused at ``to_dict()``."""
-    wg = wg_task
-    wg.metadata = {'bad_key': 1}
-    assert wg.metadata == {'bad_key': 1}
-    with pytest.raises(ValueError, match='bad_key'):
-        wg.to_dict()
-    wg.metadata = {'label': 'a valid replacement'}
-    assert wg.to_dict()['metadata']['label'] == 'a valid replacement'
-
-
-def test_wg_metadata_bad_key_refused_at_launch(wg_task):
-    """A bad key reaches ``run()``/``submit()`` through ``to_engine_inputs()``, and is refused there."""
-    wg = wg_task
-    wg.name = 'test_wg_metadata_bad_key_refused_at_launch'
-    wg.metadata['bad_key'] = 1
     with pytest.raises(ValueError, match='bad_key'):
         wg.to_engine_inputs()
     with pytest.raises(ValueError, match='bad_key'):
         wg.run()
     assert wg.process is None
+    wg.metadata = {'label': 'a valid replacement'}
+    assert wg.to_dict()['metadata']['label'] == 'a valid replacement'
 
 
 def test_engine_launch_keys_come_from_the_engine_spec():
