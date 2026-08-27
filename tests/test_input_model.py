@@ -550,6 +550,68 @@ def test_a_runtime_value_is_checked_at_the_graph_it_reaches():
     assert node.process.exit_status != 0
 
 
+class Spin(enum.Enum):
+    """The four spin treatments a workflow accepts."""
+
+    NONE = 'none'
+    COLLINEAR = 'collinear'
+    NON_COLLINEAR = 'non_collinear'
+    SPIN_ORBIT = 'spin_orbit'
+
+
+class DielectricInputs(BaseModel):
+    """Two of the four members are ph.x's own limit, written where ph.x is declared."""
+
+    spin: Spin = Spin.NONE
+    structure: str
+
+    @field_validator('spin')
+    @classmethod
+    def _supported(cls, value):
+        if value in (Spin.NON_COLLINEAR, Spin.SPIN_ORBIT):
+            raise ValueError('ph.x has no electric-field perturbation for noncollinear magnetism')
+        return value
+
+
+@task(input_model=DielectricInputs, outputs=['seen'])
+def dielectric(spin, structure):
+    return {'seen': type(spin).__name__}
+
+
+class EverySpin(BaseModel):
+    spin: Spin = Spin.NONE
+    structure: str
+
+
+@task.graph(input_model=EverySpin)
+def eps(spin, structure):
+    return dielectric(spin=spin, structure=structure).seen
+
+
+def test_a_rule_on_an_inner_task_fails_the_expansion():
+    """The graph takes every spin, so the value meets ph.x's rule as the body wires it."""
+    wg = WorkGraph('eps_noncollinear')
+    node = wg.add_task(eps, name='eps', spin=Spin.NON_COLLINEAR, structure='si')
+    wg.run()
+    assert node.state == 'FAILED'
+    assert node.process is None
+    # Neither the subgraph nor the task it would have held became a process.
+    assert [called.process_label for called in wg.process.called_descendants] == []
+
+
+def test_the_spin_the_rule_admits_reaches_the_body_as_the_member():
+    """The control: the same wiring expands, runs, and the enum survives storage."""
+    wg = WorkGraph('eps_collinear')
+    node = wg.add_task(eps, name='eps', spin=Spin.COLLINEAR, structure='si')
+    wg.run()
+    assert node.process.exit_status == 0
+    assert sorted(called.process_label for called in wg.process.called_descendants) == [
+        'WorkGraph<eps>',
+        'dielectric',
+    ]
+    assert node.outputs.result.value.value == 'Spin'
+
+
 # --------------------------------------------------------------------------
 # 6. Output models
 # --------------------------------------------------------------------------
