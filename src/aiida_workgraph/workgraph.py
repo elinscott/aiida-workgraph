@@ -63,10 +63,12 @@ class WorkGraphMetadata(GraphMetadata, EngineLaunchMetadata, total=False):  # ty
     node-graph's serialization bookkeeping (`GraphMetadata`) and AiiDA's own
     process-launch metadata ports (`EngineLaunchMetadata`), side by side, plus
     the process `pk` this class records. `extra='forbid'`: a key outside this
-    schema is refused at construction, load and serialization.
+    schema is refused at construction, load and serialization. `strict=True`:
+    a declared key holding a value of the wrong type is refused rather than
+    coerced (e.g. `store_provenance='yes'` or `pk='12'`).
     """
 
-    __pydantic_config__ = ConfigDict(extra='forbid')
+    __pydantic_config__ = ConfigDict(extra='forbid', strict=True)
 
     pk: Optional[int]
 
@@ -137,7 +139,7 @@ class WorkGraph(node_graph.Graph):
         key by key.
         """
         wgdata = self.to_dict(should_serialize=True)
-        validated = self.validate_metadata(self.metadata)
+        validated = self.validate_metadata(self.metadata, name=self.name)
         launch_metadata = {key: value for key, value in validated.items() if key in ENGINE_LAUNCH_KEYS}
         launch_metadata.update(metadata or {})
         metadata = launch_metadata
@@ -320,7 +322,7 @@ class WorkGraph(node_graph.Graph):
         wgdata['connectivity'] = self.build_connectivity()
         wgdata['process'] = serialize(self.process) if self.process else serialize(None)
         wgdata['metadata']['pk'] = self.process.pk if self.process else None
-        wgdata['metadata'] = self.validate_metadata(wgdata['metadata'])
+        wgdata['metadata'] = self.validate_metadata(wgdata['metadata'], name=self.name)
 
         return wgdata
 

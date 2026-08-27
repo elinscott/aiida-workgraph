@@ -1,5 +1,4 @@
 import pytest
-from pydantic import ValidationError
 from aiida_workgraph import WorkGraph, task, spec
 from aiida_workgraph.workgraph import BOOKKEEPING_KEYS, ENGINE_LAUNCH_KEYS, WorkGraphMetadata
 from aiida import orm
@@ -263,14 +262,44 @@ def test_wg_metadata_roundtrips_through_dict(decorated_add):
 
 def test_wg_metadata_bad_key_raises_on_construction():
     """A bad key in the constructor's ``metadata`` kwarg raises straight away."""
-    with pytest.raises(ValidationError, match='bad_key'):
+    with pytest.raises(ValueError, match='bad_key'):
         WorkGraph('test_wg_metadata_bad_key_raises_on_construction', metadata={'bad_key': 1})
 
 
 def test_wg_metadata_declared_key_wrong_type_raises(wg_task):
     """A declared key holding the wrong type is refused too, not just an unknown name."""
-    with pytest.raises(ValidationError, match='label'):
+    with pytest.raises(ValueError, match='label'):
         WorkGraph('test_wg_metadata_declared_key_wrong_type_raises', metadata={'label': [1, 2, 3]})
+
+
+@pytest.mark.parametrize('bad_value', ['no', 0, 'yes'])
+def test_wg_metadata_strict_mode_refuses_coercible_bool(bad_value):
+    """``store_provenance`` is a ``bool`` field; strict mode refuses values lax mode would coerce."""
+    with pytest.raises(ValueError, match='store_provenance'):
+        WorkGraph.validate_metadata({'store_provenance': bad_value})
+
+
+@pytest.mark.parametrize('good_value', [True, False])
+def test_wg_metadata_strict_mode_accepts_bool(good_value):
+    """An actual ``bool`` for ``store_provenance`` still passes under strict mode."""
+    assert WorkGraph.validate_metadata({'store_provenance': good_value})['store_provenance'] is good_value
+
+
+def test_wg_metadata_strict_mode_refuses_numeric_string_pk():
+    """``pk`` is an ``Optional[int]``; strict mode refuses a numeral spelled as a string."""
+    with pytest.raises(ValueError, match='pk'):
+        WorkGraph.validate_metadata({'pk': '12'})
+
+
+def test_wg_metadata_strict_mode_accepts_int_pk():
+    """An actual ``int`` for ``pk`` still passes under strict mode."""
+    assert WorkGraph.validate_metadata({'pk': 12})['pk'] == 12
+
+
+def test_wg_metadata_strict_mode_refuses_int_label():
+    """``label`` is a ``str`` field; strict mode refuses an ``int`` lax mode would stringify."""
+    with pytest.raises(ValueError, match='label'):
+        WorkGraph.validate_metadata({'label': 1})
 
 
 def test_wg_metadata_bad_key_not_refused_at_the_line(wg_task):
@@ -282,7 +311,7 @@ def test_wg_metadata_bad_key_not_refused_at_the_line(wg_task):
     wg = wg_task
     wg.metadata['bad_key'] = 1  # no complaint here
     assert wg.metadata['bad_key'] == 1
-    with pytest.raises(ValidationError, match='bad_key'):
+    with pytest.raises(ValueError, match='bad_key'):
         wg.to_dict()
 
 
@@ -291,7 +320,7 @@ def test_wg_metadata_whole_dict_reassignment_checked_at_the_boundary(wg_task):
     wg = wg_task
     wg.metadata = {'bad_key': 1}
     assert wg.metadata == {'bad_key': 1}
-    with pytest.raises(ValidationError, match='bad_key'):
+    with pytest.raises(ValueError, match='bad_key'):
         wg.to_dict()
     wg.metadata = {'label': 'a valid replacement'}
     assert wg.to_dict()['metadata']['label'] == 'a valid replacement'
@@ -302,9 +331,9 @@ def test_wg_metadata_bad_key_refused_at_launch(wg_task):
     wg = wg_task
     wg.name = 'test_wg_metadata_bad_key_refused_at_launch'
     wg.metadata['bad_key'] = 1
-    with pytest.raises(ValidationError, match='bad_key'):
+    with pytest.raises(ValueError, match='bad_key'):
         wg.to_engine_inputs()
-    with pytest.raises(ValidationError, match='bad_key'):
+    with pytest.raises(ValueError, match='bad_key'):
         wg.run()
     assert wg.process is None
 
@@ -382,7 +411,7 @@ def test_wg_metadata_unrecognized_legacy_key_raises_on_load(decorated_add):
     wgdata['metadata']['worker_name'] = 'localhost'
     with pytest.raises(ValueError) as excinfo:
         WorkGraph.from_dict(wgdata)
-    assert "Cannot load graph 'test_wg_metadata_unrecognized_legacy_key_raises_on_load'" in str(excinfo.value)
+    assert "graph 'test_wg_metadata_unrecognized_legacy_key_raises_on_load'" in str(excinfo.value)
     assert 'worker_name' in str(excinfo.value)
 
 
