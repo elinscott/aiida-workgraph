@@ -142,7 +142,8 @@ class WorkGraph(node_graph.Graph):
         validated = self.validate_metadata(self.metadata, name=self.name)
         launch_metadata = {key: value for key, value in validated.items() if key in ENGINE_LAUNCH_KEYS}
         launch_metadata.update(metadata or {})
-        metadata = launch_metadata
+        launch_metadata = self.validate_metadata(launch_metadata, name=self.name)
+        metadata = {key: value for key, value in launch_metadata.items() if key in ENGINE_LAUNCH_KEYS}
         task_inputs = self.gather_task_inputs(wgdata['tasks'])
         graph_inputs = task_inputs.pop('graph_inputs', {})
         inputs = {

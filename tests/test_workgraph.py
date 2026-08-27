@@ -239,6 +239,22 @@ def test_wg_metadata_merge_semantics(wg_task):
     assert wg.process.description == 'graph-level description'
 
 
+@pytest.mark.parametrize(
+    'metadata, offender',
+    [
+        ({'bad_key': 1}, 'bad_key'),  # a key outside the schema
+        ({'store_provenance': 'no'}, 'store_provenance'),  # a declared key, wrong type under strict mode
+    ],
+)
+def test_launch_metadata_override_validated(wg_task, metadata, offender):
+    """A launch-time ``metadata`` override goes through the same schema as ``wg.metadata``."""
+    wg = wg_task
+    wg.name = 'test_launch_metadata_override_validated'
+    with pytest.raises(ValueError, match=offender):
+        wg.run(metadata=metadata)
+    assert wg.process is None
+
+
 def test_wg_metadata_does_not_affect_name_or_process_label(wg_task):
     """Setting ``wg.metadata`` leaves identity (``name``/``process_label``) untouched."""
     wg = wg_task
