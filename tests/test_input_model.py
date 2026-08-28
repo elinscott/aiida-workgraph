@@ -983,10 +983,12 @@ def report(text):
 
 def describe(value) -> str:
     """Return what a body can tell about the value it was handed."""
-    return (
-        f'{type(value).__name__}|{value.__class__.__name__}'
-        f'|{value == Spin.COLLINEAR}|{value in (Spin.NONE, Spin.COLLINEAR)}'
-    )
+    from node_graph.socket import TaggedValue
+
+    # By kind, not by class name: which class tags a value is the tagging
+    # layer's business, and it has more than one.
+    kind = 'tagged' if isinstance(value, TaggedValue) else type(value).__name__
+    return f'{kind}|{value.__class__.__name__}|{value == Spin.COLLINEAR}|{value in (Spin.NONE, Spin.COLLINEAR)}'
 
 
 @task.graph(input_model=SpinOnly)
@@ -1004,7 +1006,7 @@ def test_a_modelled_graph_body_is_handed_the_member_under_its_tag():
     wg = WorkGraph('spin_modelled')
     node = wg.add_task(modelled_spin, name='g', spin=Spin.COLLINEAR)
     wg.run()
-    assert node.outputs.result.value.value == 'TaggedValue|Spin|True|True'
+    assert node.outputs.result.value.value == 'tagged|Spin|True|True'
 
 
 def test_a_graph_body_declaring_the_same_field_by_annotation_agrees():
@@ -1012,7 +1014,7 @@ def test_a_graph_body_declaring_the_same_field_by_annotation_agrees():
     wg = WorkGraph('spin_annotated')
     node = wg.add_task(annotated_spin, name='g', spin=Spin.COLLINEAR)
     wg.run()
-    assert node.outputs.result.value.value == 'TaggedValue|Spin|True|True'
+    assert node.outputs.result.value.value == 'tagged|Spin|True|True'
 
 
 # --------------------------------------------------------------------------
