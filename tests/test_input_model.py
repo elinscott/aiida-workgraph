@@ -964,3 +964,51 @@ def test_the_same_socket_declared_without_a_model_loses_the_node_in_silence():
     wg.run()
     assert node.process.exit_status == 0
     assert node.outputs.seen.value.value == 'Atoms'
+
+
+# --------------------------------------------------------------------------
+# 10. A graph body is handed the type its field declares
+# --------------------------------------------------------------------------
+
+
+class SpinOnly(BaseModel):
+    spin: Spin = Spin.NONE
+
+
+@task(outputs=['seen'])
+def report(text):
+    return {'seen': text}
+
+
+def describe(value) -> str:
+    """Return what a body can tell about the value it was handed."""
+    return (
+        f'{type(value).__name__}|{value.__class__.__name__}'
+        f'|{value == Spin.COLLINEAR}|{value in (Spin.NONE, Spin.COLLINEAR)}'
+    )
+
+
+@task.graph(input_model=SpinOnly)
+def modelled_spin(spin):
+    return report(text=describe(spin)).seen
+
+
+@task.graph()
+def annotated_spin(spin: Spin = Spin.NONE):
+    return report(text=describe(spin)).seen
+
+
+def test_a_modelled_graph_body_is_handed_the_member_under_its_tag():
+    """The member, so ``==`` and ``in`` answer; the tag, so the link is still drawn."""
+    wg = WorkGraph('spin_modelled')
+    node = wg.add_task(modelled_spin, name='g', spin=Spin.COLLINEAR)
+    wg.run()
+    assert node.outputs.result.value.value == 'TaggedValue|Spin|True|True'
+
+
+def test_a_graph_body_declaring_the_same_field_by_annotation_agrees():
+    """The control: the two ways of declaring one field hand the body one value."""
+    wg = WorkGraph('spin_annotated')
+    node = wg.add_task(annotated_spin, name='g', spin=Spin.COLLINEAR)
+    wg.run()
+    assert node.outputs.result.value.value == 'TaggedValue|Spin|True|True'
