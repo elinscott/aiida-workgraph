@@ -711,8 +711,8 @@ def cut_one_bad_block(n):
 
 @task(input_model=Blocks, outputs=['widest'])
 def widest_block(blocks):
-    # Each member arrived through ``Block``, so the body reads attributes.
-    return {'widest': max(item.width for item in blocks.values())}
+    # Each member arrived through ``Block`` as the keys that were written.
+    return {'widest': max(item['width'] for item in blocks.values())}
 
 
 @task(input_model=Recipe, outputs=['names', 'kinds'])
@@ -831,12 +831,14 @@ def read_nested(cfg):
 
 @task(input_model=Mapped, outputs=['kind', 'stored'])
 def read_mapped(cfgs):
-    return {'kind': type(cfgs['a'].value).__name__, 'stored': str(cfgs['a'].value)}
+    # Each item of a mapping reaches the body as the members written into it.
+    return {'kind': type(cfgs['a']['value']).__name__, 'stored': str(cfgs['a']['value'])}
 
 
 @task(input_model=DeepMapped, outputs=['kind', 'stored'])
 def read_deep(items):
-    return {'kind': type(items['a'].inner.value).__name__, 'stored': str(items['a'].inner.value)}
+    value = items['a']['inner']['value']
+    return {'kind': type(value).__name__, 'stored': str(value)}
 
 
 @pytest.mark.parametrize(
@@ -1135,3 +1137,29 @@ def test_the_leaf_body_is_handed_the_members_that_were_written():
     wg.run()
     assert node.process.exit_status == 0
     assert node.outputs.report.value.value == "none|['nbnd']"
+
+
+class EngineBlock(BaseModel):
+    """One member of a mapping, with defaults of its own."""
+
+    num_iter: int = 100
+    dis_froz_max: float = 0.0
+    num_wann: int = 4
+
+
+class EngineBlocks(BaseModel):
+    blocks: dict[str, EngineBlock] = {}
+
+
+@task(input_model=EngineBlocks, outputs=['report'])
+def reports_its_blocks(blocks):
+    return {'report': '|'.join(f'{key}:{sorted(item)}' for key, item in sorted(blocks.items()))}
+
+
+def test_each_item_of_a_mapping_reaches_the_body_as_what_was_written():
+    """A mapping is one namespace per key, so a key carries only its written members."""
+    wg = WorkGraph('written_items')
+    node = wg.add_task(reports_its_blocks, name='leaf', blocks={'occ_1': {'num_iter': 42}})
+    wg.run()
+    assert node.process.exit_status == 0
+    assert node.outputs.report.value.value == "occ_1:['num_iter']"
