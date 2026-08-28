@@ -905,14 +905,14 @@ class PayloadInputs(BaseModel):
     payload: Any = None
 
 
-@task(input_model=StructureInputs, outputs=['seen'])
+@task.calcfunction(input_model=StructureInputs)
 def reads_a_structure(structure):
-    return {'seen': type(structure).__name__}
+    return orm.Str(type(structure).__name__)
 
 
-@task(input_model=PayloadInputs, outputs=['seen'])
+@task.calcfunction(input_model=PayloadInputs)
 def reads_a_payload(payload):
-    return {'seen': type(payload).__name__}
+    return orm.Str(type(payload).__name__)
 
 
 @task(outputs=['seen'])
@@ -936,28 +936,40 @@ def test_the_spec_says_a_node_typed_socket_reaches_the_body_as_the_node():
     assert payload_spec.fields['payload'].meta.extras[BODY_RECEIVES] == 'node'
 
 
-def test_a_leaf_run_edge_hands_the_body_the_payload_the_node_carried():
-    """The limit, pinned: this edge is aiida-pythonjob's and does not read the mark.
+def test_a_node_typed_field_is_refused_on_a_pyfunction():
+    """A PyFunction reads its inputs out of their nodes, so this field cannot be met."""
+    with pytest.raises(ModelContractError, match='@task.calcfunction'):
 
-    ``PyFunction.run`` calls ``deserialize_to_raw_python_data`` over the whole
-    input mapping before it loads the inputs spec, so a ``StructureData``
-    reaches the model as the ``ase.Atoms`` its deserializer builds and the
-    model refuses the value it declared.
-    """
+        @task(input_model=StructureInputs, outputs=['seen'])
+        def reads_it(structure):
+            return {'seen': type(structure).__name__}
+
+
+def test_a_field_under_any_is_refused_on_a_pyfunction_too():
+    """``Any`` declares nothing to rebuild, so its socket is node-typed as well."""
+    with pytest.raises(ModelContractError, match='@task.calcfunction'):
+
+        @task(input_model=PayloadInputs, outputs=['seen'])
+        def reads_it(payload):
+            return {'seen': type(payload).__name__}
+
+
+def test_a_calcfunction_body_is_handed_the_node_the_model_declared():
+    """Where the rule sends such a field: the body reads the node itself."""
     wg = WorkGraph('structure_leaf')
     node = wg.add_task(reads_a_structure, name='leaf', structure=a_silicon_structure())
     wg.run()
-    assert node.process.exit_status == FUNCTION_FAILED
-    assert 'Input should be an instance of StructureData' in node.process.exit_message
+    assert node.process.exit_status == 0
+    assert node.outputs.result.value.value == 'StructureData'
 
 
-def test_the_same_edge_takes_the_node_off_an_any_field_without_a_word():
-    """The same edge, on the field kind no per-type override could ever cover."""
+def test_a_calcfunction_is_handed_the_node_under_any_as_well():
+    """The field kind no per-type override could cover reaches the body whole."""
     wg = WorkGraph('payload_leaf')
     node = wg.add_task(reads_a_payload, name='leaf', payload=orm.Dict(dict={'a': 1}).store())
     wg.run()
     assert node.process.exit_status == 0
-    assert node.outputs.seen.value.value == 'dict'
+    assert node.outputs.result.value.value == 'Dict'
 
 
 def test_the_same_socket_declared_without_a_model_loses_the_node_in_silence():

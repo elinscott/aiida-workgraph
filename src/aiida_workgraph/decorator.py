@@ -9,13 +9,13 @@ import inspect
 from .task import TaskHandle
 from node_graph.task_spec import TaskSpec
 from node_graph.socket_spec import SocketSpec
-from aiida_workgraph.socket_spec import SocketSpecAPI
+from aiida_workgraph.socket_spec import SocketSpecAPI, node_typed_paths
 from aiida_workgraph.tasks.aiida import _build_aiida_function_taskspec
 from node_graph.error_handler import ErrorHandlerSpec, normalize_error_handlers
 from aiida_workgraph.tasks.pythonjob_tasks import build_pyfunction_taskspec
 from aiida_workgraph.tasks.aiida import AiiDAProcessTask
 from node_graph.executor import RuntimeExecutor
-from node_graph.input_model import apply_models
+from node_graph.input_model import ModelContractError, apply_models, rebind_executor_callable
 
 
 def _spec_for(
@@ -125,6 +125,29 @@ def nonfunctional_usage(callable: Callable):
     return decorator_task_wrapper
 
 
+def _refuse_node_typed_inputs(model: Optional[Type[BaseModel]], spec: Optional[SocketSpec]) -> None:
+    """Raise when a model asks a PyFunction body for a value it cannot be handed.
+
+    A PyFunction's inputs are read out of their nodes before its body runs, so
+    a field declaring an AiiDA type would be handed what the node carries and
+    the model would refuse the very thing it asked for. A calcfunction's body
+    is handed the nodes themselves, and is where such a field belongs.
+    """
+    if model is None or spec is None:
+        return
+    paths = node_typed_paths(spec)
+    if not paths:
+        return
+    listed = ', '.join(repr(path) for path in paths)
+    raise ModelContractError(
+        f'{model.__name__} declares {listed} as an AiiDA type, and a task declared with '
+        '@task runs its body as a PyFunction, which is handed the value a node carries, '
+        'never the node.\n'
+        'How to fix: declare the task with @task.calcfunction, whose body is handed the '
+        'node; or declare the field as the Python type the body reads.'
+    )
+
+
 class TaskDecoratorCollection:
     """Collection of task decorators."""
 
@@ -157,6 +180,7 @@ class TaskDecoratorCollection:
             in_spec, out_spec, executor = apply_models(
                 obj, inputs, outputs, input_model, output_model, api=SocketSpecAPI
             )
+            _refuse_node_typed_inputs(input_model, in_spec)
             spec = _spec_for(
                 obj,
                 identifier=identifier,
@@ -230,14 +254,36 @@ class TaskDecoratorCollection:
         outputs: Optional[SocketSpec | list] = None,
         catalog: Optional[str] = None,
         error_handlers: Optional[Dict[str, ErrorHandlerSpec]] = None,
+        input_model: Optional[Type[BaseModel]] = None,
+        output_model: Optional[Type[BaseModel]] = None,
     ) -> Callable:
+        """Generate a decorator registering a function as a calcfunction task.
+
+        Attributes:
+            inputs (list): task inputs
+            outputs (list): task outputs
+            input_model (BaseModel): model declaring the input sockets, checked at every
+                call and again before the body runs; a field declaring an AiiDA type is
+                handed the node, which is what a calcfunction's body receives
+            output_model (BaseModel): model declaring the output sockets and validating
+                the return value
+        """
+
         def decorator(func) -> TaskHandle:
-            func_decorated = calcfunction(func)
+            in_spec, out_spec, executor = apply_models(
+                func, inputs, outputs, input_model, output_model, api=SocketSpecAPI
+            )
+            # The models are enforced inside the process, so what AiiDA runs is
+            # the wrapper and the nodes it is called with reach the body. The
+            # calcfunction is what the executor has to resolve to, so it takes
+            # over the name the wrapper was bound under.
+            func_decorated = calcfunction(executor)
+            rebind_executor_callable(func_decorated, executor)
             handle = TaskHandle(
                 _build_aiida_function_taskspec(
                     func_decorated,
-                    in_spec=inputs,
-                    out_spec=outputs,
+                    in_spec=in_spec,
+                    out_spec=out_spec,
                     catalog=catalog,
                     error_handlers=error_handlers,
                 )
