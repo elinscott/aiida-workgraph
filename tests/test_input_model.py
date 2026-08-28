@@ -825,7 +825,8 @@ class DeepMapped(BaseModel):
 
 @task(input_model=Nested, outputs=['kind', 'stored'])
 def read_nested(cfg):
-    return {'kind': type(cfg.value).__name__, 'stored': str(cfg.value)}
+    # A nested model reaches the body as the members that were written.
+    return {'kind': type(cfg['value']).__name__, 'stored': str(cfg['value'])}
 
 
 @task(input_model=Mapped, outputs=['kind', 'stored'])
@@ -1094,3 +1095,41 @@ def test_the_process_is_still_labelled_with_the_name_of_its_function():
     node = wg.add_task(named_apart_bands, name='w', lower=1, upper=9)
     wg.run()
     assert node.process.process_label == '_bands_body'
+
+
+# --------------------------------------------------------------------------
+# 12. What a member nobody wrote is worth at this engine's run edge
+# --------------------------------------------------------------------------
+
+
+class EngineSystem(BaseModel):
+    """Five members, each with a default the model answers for."""
+
+    nbnd: int = 1
+    nosym: bool = False
+    ecutwfc: float = 60.0
+    occupations: str = 'fixed'
+    degauss: float = 0.0
+
+
+class EngineRoute(BaseModel):
+    spin: Spin = Spin.NONE
+    system: EngineSystem = EngineSystem()
+
+
+@task(input_model=EngineRoute, outputs=['report'])
+def reports_its_system(spin, system):
+    return {'report': f'{spin.value}|{sorted(system)}'}
+
+
+def test_the_leaf_body_is_handed_the_members_that_were_written():
+    """One member written, and the body reads that member alone out of storage.
+
+    The top-level field is the other half of the rule: nobody wrote ``spin``,
+    so the model answers for it and the body is handed its default.
+    """
+    wg = WorkGraph('written_members')
+    node = wg.add_task(reports_its_system, name='leaf', system={'nbnd': 20})
+    wg.run()
+    assert node.process.exit_status == 0
+    assert node.outputs.report.value.value == "none|['nbnd']"
