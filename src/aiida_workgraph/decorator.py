@@ -148,6 +148,29 @@ def _refuse_node_typed_inputs(model: Optional[Type[BaseModel]], spec: Optional[S
     )
 
 
+def _refuse_namespace_inputs(model: Optional[Type[BaseModel]], spec: Optional[SocketSpec]) -> None:
+    """Raise when a model gives a calcfunction a parameter AiiDA cannot express.
+
+    A process function's parameter is one port carrying one node. A field
+    declaring a nested model, or a ``dict[str, T]``, asks for a namespace, and
+    AiiDA turns the mapping it is handed into a single ``orm.Dict``: the
+    members lose the nodes they were, and the model refuses the ``Dict`` it
+    never declared.
+    """
+    if model is None or spec is None:
+        return
+    namespaces = [name for name, field in (spec.fields or {}).items() if field.is_namespace()]
+    if not namespaces:
+        return
+    listed = ', '.join(repr(name) for name in namespaces)
+    raise ModelContractError(
+        f'{model.__name__} declares {listed} as a namespace -- a nested model or a '
+        'dict[str, T] -- and a calcfunction parameter is one port carrying one node.\n'
+        'How to fix: declare the task with @task, whose body is handed a namespace as a '
+        'mapping; or give the model one field per value the body reads.'
+    )
+
+
 class TaskDecoratorCollection:
     """Collection of task decorators."""
 
@@ -273,6 +296,7 @@ class TaskDecoratorCollection:
             in_spec, out_spec, executor = apply_models(
                 func, inputs, outputs, input_model, output_model, api=SocketSpecAPI
             )
+            _refuse_namespace_inputs(input_model, in_spec)
             # The models are enforced inside the process, so what AiiDA runs is
             # the wrapper and the nodes it is called with reach the body. The
             # calcfunction is what the executor has to resolve to, so it takes

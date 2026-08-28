@@ -1175,3 +1175,81 @@ def test_each_item_of_a_mapping_reaches_the_body_as_what_was_written():
     wg.run()
     assert node.process.exit_status == 0
     assert node.outputs.report.value.value == "occ_1:['num_iter']"
+
+
+# --------------------------------------------------------------------------
+# 13. What a calcfunction's parameters can be, and what a broken rule leaves
+# --------------------------------------------------------------------------
+
+
+class NamespaceInputs(BaseModel):
+    """A parameter a process function has no port for."""
+
+    system: EngineSystem = EngineSystem()
+
+
+class WindowInSteps(BaseModel):
+    """Two nodes and a rule that cannot answer until both are in hand."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    lower: orm.Int
+    upper: orm.Int
+
+    @model_validator(mode='after')
+    def _ordered(self):
+        if self.upper.value <= self.lower.value:
+            raise ValueError('upper must be above lower')
+        return self
+
+
+@task.calcfunction(input_model=WindowInSteps)
+def width(lower, upper):
+    return orm.Int(upper.value - lower.value)
+
+
+def test_a_namespace_field_is_refused_on_a_calcfunction():
+    """A calcfunction parameter is one port carrying one node, never a namespace."""
+    with pytest.raises(ModelContractError, match='one port carrying one node'):
+
+        @task.calcfunction(input_model=NamespaceInputs)
+        def reads_it(system):
+            return orm.Str(repr(sorted(system)))
+
+
+def test_the_same_namespace_is_what_a_pyfunction_body_reads():
+    """The control, and where the rule sends such a field."""
+    wg = WorkGraph('namespace_pyfunction')
+    node = wg.add_task(reports_its_system, name='leaf', system={'nbnd': 20})
+    wg.run()
+    assert node.process.exit_status == 0
+
+
+def test_a_calcfunction_runs_what_its_rule_admits():
+    """The scalar-node shape a calcfunction does carry, rule and all."""
+    wg = WorkGraph('width_ok')
+    node = wg.add_task(width, name='t', lower=orm.Int(1).store(), upper=orm.Int(9).store())
+    wg.run()
+    assert node.process.exit_status == 0
+    assert node.outputs.result.value.value == 8
+
+
+def test_a_rule_broken_inside_a_calcfunction_excepts_it():
+    """What a calcfunction can carry when a rule fails: an exception, not an exit status.
+
+    A process function has no controlled-failure channel for an exception in
+    its body, so the model's report reaches the excepted ``CalcFunctionNode``
+    rather than an exit message, and the task records no process of its own.
+    """
+    wg = WorkGraph('width_broken')
+    node = wg.add_task(width, name='t', lower=orm.Int(9).store(), upper=orm.Int(3).store())
+    wg.run()
+    assert node.process is None
+    excepted = (
+        orm.QueryBuilder()
+        .append(orm.CalcFunctionNode, tag='n', filters={'label': 'width'})
+        .order_by({'n': {'id': 'desc'}})
+        .first()[0]
+    )
+    assert excepted.process_state.value == 'excepted'
+    assert 'upper must be above lower' in (excepted.exception or '')
