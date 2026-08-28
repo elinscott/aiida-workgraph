@@ -1012,3 +1012,85 @@ def test_a_graph_body_declaring_the_same_field_by_annotation_agrees():
     node = wg.add_task(annotated_spin, name='g', spin=Spin.COLLINEAR)
     wg.run()
     assert node.outputs.result.value.value == 'TaggedValue|Spin|True|True'
+
+
+# --------------------------------------------------------------------------
+# 11. A handle that does not take the name of the function it decorates
+# --------------------------------------------------------------------------
+
+
+class BandWindow(BaseModel):
+    """A field rule for the write, and a cross-field rule only the run edge holds."""
+
+    lower: int = 0
+    upper: int = 1
+
+    @field_validator('lower')
+    @classmethod
+    def _counted(cls, value):
+        if value < 0:
+            raise ValueError('lower counts bands, so it cannot be negative')
+        return value
+
+    @model_validator(mode='after')
+    def _ordered(self):
+        if self.upper <= self.lower:
+            raise ValueError('upper must be above lower')
+        return self
+
+
+def _bands_body(lower, upper):
+    return upper - lower
+
+
+#: The decorated name is never rebound, so the module still binds the function.
+named_apart_bands = task(input_model=BandWindow)(_bands_body)
+
+
+@task(input_model=BandWindow)
+def rebound_bands(lower, upper):
+    """The ordinary spelling: the handle replaces the module global."""
+    return upper - lower
+
+
+SPELLINGS = pytest.mark.parametrize(
+    'handle',
+    [named_apart_bands, rebound_bands],
+    ids=['handle named apart', 'handle rebound to the name'],
+)
+
+
+@SPELLINGS
+def test_the_write_is_refused_whatever_the_handle_is_called(handle):
+    """The write reads the model off the executor, and both spellings store one."""
+    wg = WorkGraph('bands_write')
+    with pytest.raises(TaskInputValidationError, match='cannot be negative'):
+        wg.add_task(handle, name='w', lower=-5, upper=9)
+
+
+@SPELLINGS
+def test_the_submitted_task_holds_the_rule_the_write_could_not(handle):
+    """A cross-field rule waits for the run edge, which the engine reaches the same way."""
+    wg = WorkGraph('bands_run')
+    node = wg.add_task(handle, name='w', lower=9, upper=3)
+    wg.run()
+    assert node.process.exit_status == FUNCTION_FAILED
+    assert 'upper must be above lower' in node.process.exit_message
+
+
+@SPELLINGS
+def test_the_bounds_the_model_admits_still_run(handle):
+    """The control: what the model accepts reaches the body and comes back."""
+    wg = WorkGraph('bands_ok')
+    node = wg.add_task(handle, name='w', lower=1, upper=9)
+    wg.run()
+    assert node.process.exit_status == 0
+    assert node.outputs.result.value.value == 8
+
+
+def test_the_process_is_still_labelled_with_the_name_of_its_function():
+    """What the executor is stored under is its own business, not the label's."""
+    wg = WorkGraph('bands_label')
+    node = wg.add_task(named_apart_bands, name='w', lower=1, upper=9)
+    wg.run()
+    assert node.process.process_label == '_bands_body'
