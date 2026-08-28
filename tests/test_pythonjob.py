@@ -422,3 +422,33 @@ def test_a_model_declared_node_reaches_the_body_as_the_node():
     node = wg.add_task(reads_a_structure_by_annotation, name='leaf', structure=structure)
     wg.run()
     assert node.outputs.seen.value.value == 'Atoms'
+
+
+@pytest.mark.skipif(not keep_as_node_is_available(), reason='needs aiida-pythonjob with `keep_as_node`')
+def test_the_var_kwargs_branch_passes_the_declaration_too(monkeypatch):
+    """The other sync call site: a function taking **kwargs is prepared the same way.
+
+    No input model can stamp such a task -- the model contract refuses a function
+    with `*args`/`**kwargs` -- so the paths are stubbed and what is pinned here is
+    that this call site forwards them at all.
+    """
+    from aiida import orm
+    from aiida_workgraph.tasks import pythonjob_tasks
+
+    monkeypatch.setattr(pythonjob_tasks, 'node_arrival_paths', lambda spec, prefix='': ['structure'])
+
+    # The default output: this call site passes no outputs spec, so a task
+    # declaring its own would fail before it reached the assertion.
+    @task()
+    def reads(structure, **extras):
+        return f'{type(structure).__name__}|{sorted(extras)}'
+
+    structure = orm.StructureData(cell=[[0.0, 2.7, 2.7], [2.7, 0.0, 2.7], [2.7, 2.7, 0.0]])
+    structure.append_atom(position=(0.0, 0.0, 0.0), symbols='Si')
+    structure.store()
+
+    wg = WorkGraph('var_kwargs_keep_as_node')
+    node = wg.add_task(reads, name='leaf', structure=structure, extras={'m': 2})
+    wg.run()
+
+    assert node.outputs.result.value.value == "StructureData|['m']"

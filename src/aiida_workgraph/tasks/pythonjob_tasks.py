@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 from typing import Any, Dict, Optional, Callable, Annotated
 from aiida import orm
 from aiida.common.extendeddicts import AttributeDict
@@ -141,6 +142,29 @@ class PythonJobTask(BaseSerializablePythonTask):
         return process, state
 
 
+@functools.lru_cache(maxsize=1)
+def keep_as_node_is_supported() -> bool:
+    """True when the installed aiida-pythonjob takes `keep_as_node`.
+
+    Older releases have no such keyword, and would take it for an input of the
+    function; against those the declaration is left out and a node-typed input
+    arrives as its Python payload, as it always did.
+    """
+    import inspect
+
+    from aiida_pythonjob import prepare_pyfunction_inputs
+
+    return 'keep_as_node' in inspect.signature(prepare_pyfunction_inputs).parameters
+
+
+def keep_as_node_for(spec: SocketSpec) -> dict[str, list[str]]:
+    """Return the `keep_as_node` keyword for a spec, or nothing to pass on."""
+    if not keep_as_node_is_supported():
+        return {}
+    paths = node_arrival_paths(spec)
+    return {'keep_as_node': paths} if paths else {}
+
+
 def node_arrival_paths(spec: SocketSpec, prefix: str = '') -> list[str]:
     """Return the dotted paths of the inputs whose declared type is a node.
 
@@ -180,10 +204,7 @@ class PyFunctionTask(BaseSerializablePythonTask):
             func = func._callable
 
         inputs_spec = self.function_inputs_spec
-        # Named only when there is something to name, so a task whose inputs are
-        # all plain data still runs against an aiida-pythonjob without the keyword.
-        paths = node_arrival_paths(inputs_spec)
-        keep_as_node = {'keep_as_node': paths} if paths else {}
+        keep_as_node = keep_as_node_for(inputs_spec)
 
         if self.spec.metadata.get('is_coroutine', False):
             function_inputs = self.get_function_inputs(kwargs, var_kwargs)
@@ -230,7 +251,7 @@ class PyFunctionTask(BaseSerializablePythonTask):
                     **kwargs,
                 )
             else:
-                _, process = run_get_node(func, **kwargs, **var_kwargs)
+                _, process = run_get_node(func, **keep_as_node, **kwargs, **var_kwargs)
 
             return process, TaskState.FINISHED
 
@@ -250,16 +271,18 @@ class MonitorFunctionTask(BaseSerializablePythonTask):
         if isinstance(func, BaseHandle) and hasattr(func, '_callable'):
             func = func._callable
         function_inputs = self.get_function_inputs(kwargs, var_kwargs)
+        inputs_spec = self.function_inputs_spec
         inputs = prepare_monitor_function_inputs(
             function=func,
             function_inputs=function_inputs,
-            inputs_spec=self.function_inputs_spec,
+            inputs_spec=inputs_spec,
             outputs_spec=self.function_outputs_spec,
             metadata=metadata,
             process_label=kwargs.pop('process_label', None),
             deserializers=kwargs.pop('deserializers', None),
             serializers=kwargs.pop('serializers', None),
             register_pickle_by_value=kwargs.pop('register_pickle_by_value', False),
+            **keep_as_node_for(inputs_spec),
             **kwargs,
         )
         if self.action == TaskAction.PAUSE:
