@@ -881,3 +881,86 @@ def test_a_task_without_a_model_is_untouched():
     node = wg.add_task(plain_add, name='add', x=2)
     wg.run()
     assert node.outputs.result.value.value == 9
+
+
+# --------------------------------------------------------------------------
+# 9. The node a body was promised, and the edge that takes it off
+# --------------------------------------------------------------------------
+
+
+class StructureInputs(BaseModel):
+    """One socket the model can only be satisfied by the node itself."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    structure: orm.StructureData
+
+
+class PayloadInputs(BaseModel):
+    """``Any`` declares nothing to rebuild, so its socket arrives as stored."""
+
+    payload: Any = None
+
+
+@task(input_model=StructureInputs, outputs=['seen'])
+def reads_a_structure(structure):
+    return {'seen': type(structure).__name__}
+
+
+@task(input_model=PayloadInputs, outputs=['seen'])
+def reads_a_payload(payload):
+    return {'seen': type(payload).__name__}
+
+
+@task(outputs=['seen'])
+def reads_a_structure_by_annotation(structure: orm.StructureData):
+    return {'seen': type(structure).__name__}
+
+
+def a_silicon_structure() -> orm.StructureData:
+    """Return a two-atom silicon cell, stored."""
+    structure = orm.StructureData(cell=[[0.0, 2.7, 2.7], [2.7, 0.0, 2.7], [2.7, 2.7, 0.0]])
+    structure.append_atom(position=(0.0, 0.0, 0.0), symbols='Si')
+    structure.append_atom(position=(1.35, 1.35, 1.35), symbols='Si')
+    return structure.store()
+
+
+def test_the_spec_says_a_node_typed_socket_reaches_the_body_as_the_node():
+    """What the contract promises for these two sockets, before anything runs."""
+    structure_spec = spec_from_model(StructureInputs)
+    payload_spec = spec_from_model(PayloadInputs)
+    assert structure_spec.fields['structure'].meta.extras[BODY_RECEIVES] == 'node'
+    assert payload_spec.fields['payload'].meta.extras[BODY_RECEIVES] == 'node'
+
+
+def test_a_leaf_run_edge_hands_the_body_the_payload_the_node_carried():
+    """The limit, pinned: this edge is aiida-pythonjob's and does not read the mark.
+
+    ``PyFunction.run`` calls ``deserialize_to_raw_python_data`` over the whole
+    input mapping before it loads the inputs spec, so a ``StructureData``
+    reaches the model as the ``ase.Atoms`` its deserializer builds and the
+    model refuses the value it declared.
+    """
+    wg = WorkGraph('structure_leaf')
+    node = wg.add_task(reads_a_structure, name='leaf', structure=a_silicon_structure())
+    wg.run()
+    assert node.process.exit_status == FUNCTION_FAILED
+    assert 'Input should be an instance of StructureData' in node.process.exit_message
+
+
+def test_the_same_edge_takes_the_node_off_an_any_field_without_a_word():
+    """The same edge, on the field kind no per-type override could ever cover."""
+    wg = WorkGraph('payload_leaf')
+    node = wg.add_task(reads_a_payload, name='leaf', payload=orm.Dict(dict={'a': 1}).store())
+    wg.run()
+    assert node.process.exit_status == 0
+    assert node.outputs.seen.value.value == 'dict'
+
+
+def test_the_same_socket_declared_without_a_model_loses_the_node_in_silence():
+    """The control: the edge behaves the same way with no model to notice it."""
+    wg = WorkGraph('structure_annotated')
+    node = wg.add_task(reads_a_structure_by_annotation, name='leaf', structure=a_silicon_structure())
+    wg.run()
+    assert node.process.exit_status == 0
+    assert node.outputs.seen.value.value == 'Atoms'
