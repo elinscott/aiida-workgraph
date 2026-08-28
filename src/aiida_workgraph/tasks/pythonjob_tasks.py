@@ -141,6 +141,29 @@ class PythonJobTask(BaseSerializablePythonTask):
         return process, state
 
 
+def node_arrival_paths(spec: SocketSpec, prefix: str = '') -> list[str]:
+    """Return the dotted paths of the inputs whose declared type is a node.
+
+    ``body_receives`` marks each leaf with the form the body takes for it; a
+    dynamic namespace is named whole, since its keys are not known until the
+    values arrive.
+    """
+    from node_graph.input_model import BODY_RECEIVES
+
+    paths: list[str] = []
+    for name, child in (spec.fields or {}).items():
+        path = f'{prefix}{name}'
+        if child.is_namespace():
+            if child.item is not None:
+                if (child.item.meta.extras or {}).get(BODY_RECEIVES) == 'node':
+                    paths.append(path)
+            else:
+                paths.extend(node_arrival_paths(child, f'{path}.'))
+        elif (child.meta.extras or {}).get(BODY_RECEIVES) == 'node':
+            paths.append(path)
+    return paths
+
+
 class PyFunctionTask(BaseSerializablePythonTask):
     """PyFunction Task."""
 
@@ -156,18 +179,25 @@ class PyFunctionTask(BaseSerializablePythonTask):
         if isinstance(func, BaseHandle) and hasattr(func, '_callable'):
             func = func._callable
 
+        inputs_spec = self.function_inputs_spec
+        # Named only when there is something to name, so a task whose inputs are
+        # all plain data still runs against an aiida-pythonjob without the keyword.
+        paths = node_arrival_paths(inputs_spec)
+        keep_as_node = {'keep_as_node': paths} if paths else {}
+
         if self.spec.metadata.get('is_coroutine', False):
             function_inputs = self.get_function_inputs(kwargs, var_kwargs)
             inputs = prepare_pyfunction_inputs(
                 function=func,
                 function_inputs=function_inputs,
-                inputs_spec=self.function_inputs_spec,
+                inputs_spec=inputs_spec,
                 outputs_spec=self.function_outputs_spec,
                 metadata=metadata,
                 process_label=kwargs.pop('process_label', None),
                 deserializers=kwargs.pop('deserializers', None),
                 serializers=kwargs.pop('serializers', None),
                 register_pickle_by_value=kwargs.pop('register_pickle_by_value', False),
+                **keep_as_node,
             )
             if self.action == TaskAction.PAUSE:
                 engine_process.report(f'Task {self.name} is created and paused.')
@@ -193,9 +223,10 @@ class PyFunctionTask(BaseSerializablePythonTask):
             if var_kwargs is None:
                 _, process = run_get_node(
                     func,
-                    inputs_spec=self.function_inputs_spec,
+                    inputs_spec=inputs_spec,
                     outputs_spec=self.function_outputs_spec,
                     metadata=metadata,
+                    **keep_as_node,
                     **kwargs,
                 )
             else:
