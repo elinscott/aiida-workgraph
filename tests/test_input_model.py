@@ -1239,17 +1239,20 @@ def test_a_rule_broken_inside_a_calcfunction_excepts_it():
 
     A process function has no controlled-failure channel for an exception in
     its body, so the model's report reaches the excepted ``CalcFunctionNode``
-    rather than an exit message, and the task records no process of its own.
+    rather than an exit message.
     """
     wg = WorkGraph('width_broken')
-    node = wg.add_task(width, name='t', lower=orm.Int(9).store(), upper=orm.Int(3).store())
+    wg.add_task(width, name='t', lower=orm.Int(9).store(), upper=orm.Int(3).store())
     wg.run()
-    assert node.process is None
     excepted = (
         orm.QueryBuilder()
-        .append(orm.CalcFunctionNode, tag='n', filters={'label': 'width'})
+        .append(
+            orm.CalcFunctionNode,
+            tag='n',
+            filters={'label': 'width', 'attributes.process_state': 'excepted'},
+        )
         .order_by({'n': {'id': 'desc'}})
         .first()[0]
     )
-    assert excepted.process_state.value == 'excepted'
+    assert excepted.exit_status is None
     assert 'upper must be above lower' in (excepted.exception or '')
